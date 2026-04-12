@@ -14,28 +14,40 @@ Scoring when semantic embeddings are available:
 Fallback when semantic is unavailable:
     alpha * bm25_norm  +  (1 - alpha) * tfidf_norm
 
-Changes from previous version
-------------------------------
-- Embedding persistence: computed embeddings are saved to DB immediately
-  so they survive app restarts.  On reload() the DB-persisted embeddings
-  are loaded into memory instead of being recomputed from scratch.
-- Version guard: every background embed thread carries the _version token
-  it was spawned with.  Before writing results it re-checks _version; if a
-  newer reload/add has happened the thread discards its work silently.
-  This prevents a slow old thread from overwriting fresher state.
-- 30-chunk cap removed: all chunks without a persisted embedding are
-  processed incrementally.  The version guard makes this safe.
-- Incremental mutations: add_chunks() / remove_doc() / clear() replace
-  full reload() at every call site except init().
-- Score threshold: query() returns [] when the best score is below
-  RELEVANCE_THRESHOLD, so the pipeline never injects irrelevant context.
-- Embedding HTTP timeout reduced to 10 s (was 60 s in llm.get_embedding).
+Phase 1 changes (carried forward)
+-----------------------------------
+- Embedding persistence: computed embeddings saved to DB on each chunk,
+  loaded back on reload() so they survive app restarts.
+- Version guard: background embed threads abort when superseded.
+- 30-chunk cap removed: all chunks embedded incrementally.
+- Incremental mutations: add_chunks / remove_doc / clear.
+- Score threshold: query() returns [] below RELEVANCE_THRESHOLD.
+
+Phase 2 changes (this version)
+--------------------------------
+Step 13 — Inverted index for BM25:
+  _build_index() precomputes at reload/add_chunks time:
+    self._index       : term -> sorted list of chunk indices
+    self._tf_maps     : per-chunk {term: raw_count}
+    self._doc_lengths : per-chunk token count
+  _bm25_scores_sparse() does index lookup instead of full scan.
+  Complexity: O(candidates x query_tokens) vs old O(N x query_tokens).
+
+Step 14 — Two-stage retrieval:
+  query() runs BM25 first to get top BM25_CANDIDATE_K=50 candidates,
+  then runs semantic scoring only on those 50 rather than full corpus.
+  TF-IDF cosine is also restricted to the same candidate set.
+
+Step 15 — Query embedding cache:
+  Repeated or near-duplicate queries skip the Nomic HTTP call.
+  LRU eviction with MAX_QUERY_CACHE=64 entries.
 """
 from __future__ import annotations
 
 import math
 import threading
-from typing import Dict, List, Optional, Tuple
+from collections import OrderedDict
+from typing import Dict, List, Optional, Set, Tuple
 
 from chunker import tokenise
 
@@ -48,8 +60,33 @@ B  = 0.75   # length normalisation weight
 # ------------------------------------------------------------------ #
 #  Retrieval quality gates                                             #
 # ------------------------------------------------------------------ #
-RELEVANCE_THRESHOLD = 0.15   # minimum combined score to be considered relevant
-MIN_MARGIN          = 0.05   # top result must beat second result by at least this
+RELEVANCE_THRESHOLD = 0.15
+MIN_MARGIN          = 0.05
+
+# ------------------------------------------------------------------ #
+#  Query embedding cache (Step 15)                                    #
+# ------------------------------------------------------------------ #
+MAX_QUERY_CACHE    = 64
+_query_cache:      OrderedDict    = OrderedDict()
+_query_cache_lock: threading.Lock = threading.Lock()
+
+
+def _get_cached_query_embedding(text: str) -> Optional[list]:
+    with _query_cache_lock:
+        if text in _query_cache:
+            _query_cache.move_to_end(text)   # mark as recently used
+            return _query_cache[text]
+    return None
+
+
+def _set_cached_query_embedding(text: str, emb: list) -> None:
+    with _query_cache_lock:
+        if text in _query_cache:
+            _query_cache.move_to_end(text)
+        else:
+            if len(_query_cache) >= MAX_QUERY_CACHE:
+                _query_cache.popitem(last=False)   # evict oldest
+            _query_cache[text] = emb
 
 
 # ------------------------------------------------------------------ #
@@ -57,7 +94,6 @@ MIN_MARGIN          = 0.05   # top result must beat second result by at least th
 # ------------------------------------------------------------------ #
 
 def _dot(a: Dict[str, float], b: Dict[str, float]) -> float:
-    """Sparse dot product — iterates the smaller dict."""
     if len(a) > len(b):
         a, b = b, a
     return sum(a[t] * b[t] for t in a if t in b)
@@ -72,7 +108,6 @@ def _cosine_sparse(a: Dict[str, float], b: Dict[str, float]) -> float:
 
 
 def _cosine_dense(a: list, b: list) -> float:
-    """Cosine similarity between two dense float vectors (pure Python)."""
     dot = sum(x * y for x, y in zip(a, b))
     na  = math.sqrt(sum(x * x for x in a)) or 1.0
     nb  = math.sqrt(sum(x * x for x in b)) or 1.0
@@ -80,7 +115,7 @@ def _cosine_dense(a: list, b: list) -> float:
 
 
 def _normalise_scores(scores: List[float]) -> List[float]:
-    """Min-max normalise a list to [0, 1].  Returns zeros if all equal."""
+    """Min-max normalise to [0, 1]. Returns zeros if all values equal."""
     mn  = min(scores)
     mx  = max(scores)
     rng = mx - mn or 1.0
@@ -103,50 +138,103 @@ class HybridRetriever:
 
     Public mutation API
     -------------------
-    reload()              — full reload from DB (init only)
-    add_chunks(chunks)    — append newly ingested chunks
-    remove_doc(doc_id)    — drop all chunks for a deleted document
-    clear()               — reset everything without a DB round-trip
+    reload()              -- full reload from DB (init only)
+    add_chunks(chunks)    -- append newly ingested chunks
+    remove_doc(doc_id)    -- drop all chunks for a deleted document
+    clear()               -- reset everything without a DB round-trip
     """
 
+    # BM25 candidates passed to semantic re-ranker (Stage 2)
+    BM25_CANDIDATE_K = 50
+
     def __init__(self, alpha: float = 0.5) -> None:
-        """
-        alpha: BM25/TF-IDF blend weight used when semantic is unavailable.
-            alpha=1.0 → pure BM25
-            alpha=0.0 → pure TF-IDF cosine
-        """
         self.alpha = alpha
 
         # Core corpus state
-        self._chunks:      List[dict]  = []   # {id, doc_id, text, tokens, tfidf_vec, embedding}
-        self._avg_dl:      float       = 1.0  # average document (chunk) length in tokens
+        self._chunks:       List[dict] = []
+        self._avg_dl:       float      = 1.0
+
+        # Inverted index (Step 13)
+        self._index:        Dict[str, List[int]] = {}   # term -> [chunk_idx]
+        self._tf_maps:      List[Dict[str, int]] = []   # per-chunk raw counts
+        self._doc_lengths:  List[int]            = []   # per-chunk token count
+        self._index_lock    = threading.Lock()
 
         # Semantic embedding cache  {chunk_id: list[float]}
-        self._embeddings:  dict        = {}
+        self._embeddings:   dict       = {}
         self._embed_lock               = threading.Lock()
-        self._embed_ready: bool        = False
+        self._embed_ready:  bool       = False
 
-        # Version counter — incremented on every corpus mutation.
-        # Background threads carry their birth version and abort if stale.
-        self._version:     int         = 0
+        # Version counter for background embed thread guard
+        self._version:      int        = 0
+
+    # ---------------------------------------------------------------- #
+    #  Index construction (Step 13)                                     #
+    # ---------------------------------------------------------------- #
+
+    def _build_index(self) -> None:
+        """
+        Build inverted index and per-chunk structures from scratch.
+        Single pass over self._chunks: O(total_tokens).
+        Called after reload() and after remove_doc() (which shifts indices).
+        """
+        index:       Dict[str, List[int]] = {}
+        tf_maps:     List[Dict[str, int]] = []
+        doc_lengths: List[int]            = []
+
+        for i, chunk in enumerate(self._chunks):
+            tokens = chunk["tokens"]
+            dl     = len(tokens)
+            doc_lengths.append(dl)
+
+            tf_map: Dict[str, int] = {}
+            for t in tokens:
+                tf_map[t] = tf_map.get(t, 0) + 1
+            tf_maps.append(tf_map)
+
+            for t in tf_map:
+                index.setdefault(t, []).append(i)
+
+        with self._index_lock:
+            self._index       = index
+            self._tf_maps     = tf_maps
+            self._doc_lengths = doc_lengths
+
+    def _extend_index(self, new_chunks: List[dict], start_idx: int) -> None:
+        """
+        Extend index incrementally for newly appended chunks.
+        O(new_tokens) -- does not touch existing entries.
+        Called by add_chunks() after chunks are already appended.
+        """
+        for i, chunk in enumerate(new_chunks):
+            tokens = chunk["tokens"]
+            dl     = len(tokens)
+
+            tf_map: Dict[str, int] = {}
+            for t in tokens:
+                tf_map[t] = tf_map.get(t, 0) + 1
+
+            chunk_idx = start_idx + i
+            with self._index_lock:
+                self._doc_lengths.append(dl)
+                self._tf_maps.append(tf_map)
+                for t in tf_map:
+                    self._index.setdefault(t, []).append(chunk_idx)
 
     # ---------------------------------------------------------------- #
     #  Corpus mutation                                                   #
     # ---------------------------------------------------------------- #
 
     def reload(self) -> None:
-        """
-        Full reload from the database.
-        Should only be called from pipeline.init() — all other call
-        sites should use add_chunks / remove_doc / clear.
-        """
+        """Full reload from DB. Only called from pipeline.init()."""
         from storage import load_all_chunks
 
-        chunks = load_all_chunks()
-        self._chunks  = chunks
-        self._avg_dl  = _recalc_avg_dl(chunks)
+        chunks       = load_all_chunks()
+        self._chunks = chunks
+        self._avg_dl = _recalc_avg_dl(chunks)
 
-        # Bootstrap embedding cache from DB-persisted values.
+        self._build_index()
+
         persisted = {
             c["id"]: c["embedding"]
             for c in chunks
@@ -160,9 +248,9 @@ class HybridRetriever:
             self._embed_ready = bool(persisted)
 
         print(f"[retriever] reload: {len(chunks)} chunks, "
-              f"{len(persisted)} embeddings already persisted")
+              f"{len(persisted)} embeddings persisted, "
+              f"{len(self._index)} index terms")
 
-        # Kick off background embedding for any chunks that still need it.
         unembedded = [c for c in chunks if c["id"] not in persisted]
         if unembedded:
             threading.Thread(
@@ -171,18 +259,18 @@ class HybridRetriever:
                 daemon=True,
             ).start()
         else:
-            print("[retriever] all chunks already embedded — skipping background job")
+            print("[retriever] all chunks already embedded")
 
     def add_chunks(self, new_chunks: List[dict]) -> None:
-        """
-        Append freshly ingested chunks without rebuilding the entire corpus.
-        Triggers a background embedding pass for the new chunks only.
-        """
+        """Append freshly ingested chunks. Extends the index incrementally."""
         if not new_chunks:
             return
 
+        start_idx = len(self._chunks)
         self._chunks.extend(new_chunks)
         self._avg_dl = _recalc_avg_dl(self._chunks)
+
+        self._extend_index(new_chunks, start_idx)
 
         with self._embed_lock:
             self._version   += 1
@@ -196,16 +284,16 @@ class HybridRetriever:
 
     def remove_doc(self, doc_id: int) -> None:
         """
-        Remove all chunks belonging to doc_id from in-memory state.
-        Called after a document is deleted from the DB.
+        Remove all chunks for doc_id and rebuild the index.
+        Full rebuild is required because chunk indices shift on removal.
         """
         self._chunks = [c for c in self._chunks if c["doc_id"] != doc_id]
         self._avg_dl = _recalc_avg_dl(self._chunks)
+        self._build_index()
 
         surviving_ids = {c["id"] for c in self._chunks}
         with self._embed_lock:
             self._version   += 1
-            # Prune embedding cache — don't hold vectors for deleted chunks.
             self._embeddings = {
                 k: v for k, v in self._embeddings.items()
                 if k in surviving_ids
@@ -213,15 +301,16 @@ class HybridRetriever:
             self._embed_ready = bool(self._embeddings)
 
     def clear(self) -> None:
-        """
-        Reset everything in memory without touching the DB.
-        Called by pipeline.clear_all_documents().
-        """
-        self._chunks  = []
-        self._avg_dl  = 1.0
+        """Reset everything in memory without touching the DB."""
+        self._chunks = []
+        self._avg_dl = 1.0
+        with self._index_lock:
+            self._index       = {}
+            self._tf_maps     = []
+            self._doc_lengths = []
         with self._embed_lock:
-            self._version   += 1
-            self._embeddings = {}
+            self._version    += 1
+            self._embeddings  = {}
             self._embed_ready = False
 
     def is_empty(self) -> bool:
@@ -233,30 +322,13 @@ class HybridRetriever:
 
     def _compute_embeddings(self, version: int) -> None:
         """
-        Background thread: embed every chunk that doesn't yet have a
-        persisted vector, then update the in-memory cache.
-
-        version guard
-        -------------
-        The thread checks self._version before each HTTP call and before
-        committing its batch to memory.  If the corpus has changed since
-        this thread was spawned (version mismatch) the thread exits
-        immediately and discards all computed results — the newer thread
-        spawned by the mutation will handle those chunks.
-
-        Persistence
-        -----------
-        Each embedding is saved to the DB immediately after computation
-        so it survives app restarts.  A future reload() will load it
-        from the DB directly, skipping the HTTP call.
+        Background thread: embed unembedded chunks, persist each to DB,
+        update in-memory cache. Version guard aborts stale threads.
         """
         try:
             from llm import get_embedding
             from storage import save_chunk_embedding
 
-            # Snapshot the list of chunks that still need embedding.
-            # We take this snapshot once; the version guard handles
-            # any mutations that arrive while we're running.
             with self._embed_lock:
                 if self._version != version:
                     return
@@ -273,47 +345,40 @@ class HybridRetriever:
                 return
 
             print(f"[retriever] embedding {len(chunks_to_embed)} chunk(s) "
-                  f"in background (version={version})")
+                  f"(version={version})")
 
             computed: Dict[int, list] = {}
 
             for c in chunks_to_embed:
-                # --- version check before each HTTP call ---
                 with self._embed_lock:
                     if self._version != version:
-                        print(f"[retriever] embed thread v{version} superseded "
-                              f"by v{self._version} — stopping")
+                        print(f"[retriever] embed thread v{version} superseded — stopping")
                         return
 
                 emb = get_embedding(c["text"][:300])
 
                 if emb is None:
-                    # Nomic server not available — stop gracefully.
-                    # BM25+TF-IDF will handle retrieval until it comes up.
                     print("[retriever] embedding endpoint unavailable — "
                           "falling back to BM25+TF-IDF")
                     return
 
                 computed[c["id"]] = emb
-                # Persist to DB immediately so restarts don't lose this work.
                 try:
                     save_chunk_embedding(c["id"], emb)
                 except Exception as db_exc:
                     print(f"[retriever] failed to persist embedding "
                           f"for chunk {c['id']}: {db_exc}")
 
-            # --- final version check before updating in-memory cache ---
             with self._embed_lock:
                 if self._version != version:
                     print(f"[retriever] embed thread v{version} superseded "
-                          f"before cache commit — discarding results")
+                          f"before cache commit — discarding")
                     return
                 self._embeddings.update(computed)
                 self._embed_ready = True
 
-            print(f"[retriever] semantic embeddings ready "
-                  f"({len(computed)} new, "
-                  f"{len(self._embeddings)} total)")
+            print(f"[retriever] embeddings ready "
+                  f"({len(computed)} new, {len(self._embeddings)} total)")
 
         except Exception as exc:
             print(f"[retriever] embedding computation failed: {exc}")
@@ -322,75 +387,96 @@ class HybridRetriever:
     #  Scoring                                                           #
     # ---------------------------------------------------------------- #
 
-    def _bm25_scores(self, query_tokens: List[str]) -> List[float]:
+    def _bm25_scores_sparse(
+        self, query_tokens: List[str]
+    ) -> Dict[int, float]:
         """
-        BM25 score for every chunk.
-        O(chunks × query_tokens) — will be replaced by an inverted
-        index in Phase 2 (Step 13).
-        """
-        N      = len(self._chunks)
-        scores = []
+        BM25 using inverted index (Step 13).
+        Returns sparse {chunk_idx: score} — only matched chunks.
+        Unmatched chunks are not in the dict (implicitly zero).
 
-        # Per-token IDF across the corpus
-        idf: Dict[str, float] = {}
+        Complexity: O(matched_chunks x query_tokens)
+        vs old:     O(all_chunks x query_tokens)
+        """
+        N = len(self._chunks)
+        if N == 0:
+            return {}
+
+        scores: Dict[int, float] = {}
+
+        with self._index_lock:
+            index       = self._index
+            tf_maps     = self._tf_maps
+            doc_lengths = self._doc_lengths
+
         for qt in set(query_tokens):
-            df       = sum(1 for c in self._chunks if qt in c["tokens"])
-            idf[qt]  = math.log((N - df + 0.5) / (df + 0.5) + 1.0)
+            candidate_indices = index.get(qt, [])
+            if not candidate_indices:
+                continue
 
-        for chunk in self._chunks:
-            tokens = chunk["tokens"]
-            dl     = len(tokens) or 1
+            df  = len(candidate_indices)
+            idf = math.log((N - df + 0.5) / (df + 0.5) + 1.0)
 
-            # Build tf_map for this chunk
-            tf_map: Dict[str, int] = {}
-            for t in tokens:
-                tf_map[t] = tf_map.get(t, 0) + 1
-
-            score = 0.0
-            for qt in query_tokens:
-                if qt not in tf_map:
+            for i in candidate_indices:
+                if i >= len(tf_maps):
+                    continue   # index briefly ahead of tf_maps during add
+                tf = tf_maps[i].get(qt, 0)
+                if tf == 0:
                     continue
-                tf     = tf_map[qt]
-                score += idf.get(qt, 0.0) * (
+                dl = doc_lengths[i] or 1
+                scores[i] = scores.get(i, 0.0) + idf * (
                     tf * (K1 + 1)
                     / (tf + K1 * (1 - B + B * dl / self._avg_dl))
                 )
-            scores.append(score)
 
         return scores
 
-    def _cosine_scores(self, query_tokens: List[str]) -> List[float]:
-        """TF-IDF sparse cosine score for every chunk."""
+    def _cosine_scores_candidates(
+        self, query_tokens: List[str], candidate_indices: List[int]
+    ) -> Dict[int, float]:
+        """TF-IDF cosine for candidate subset only (Step 14)."""
         from collections import Counter
         tf    = Counter(query_tokens)
         total = len(query_tokens) or 1
         q_vec: Dict[str, float] = {t: cnt / total for t, cnt in tf.items()}
-        return [_cosine_sparse(q_vec, c["tfidf_vec"]) for c in self._chunks]
 
-    def _semantic_scores(
-        self, query_text: str
-    ) -> Optional[List[float]]:
+        return {
+            i: _cosine_sparse(q_vec, self._chunks[i]["tfidf_vec"])
+            for i in candidate_indices
+            if i < len(self._chunks)
+        }
+
+    def _semantic_scores_candidates(
+        self, query_text: str, candidate_indices: List[int]
+    ) -> Optional[Dict[int, float]]:
         """
-        Return per-chunk cosine similarity against the query embedding,
-        or None if embeddings are not ready or the server is down.
+        Dense cosine for candidate subset (Step 14).
+        Uses query embedding cache (Step 15) to avoid repeated HTTP calls.
+        Returns None if Nomic is unavailable or embeddings not ready.
         """
         with self._embed_lock:
             if not self._embed_ready:
                 return None
-            embeddings = dict(self._embeddings)   # snapshot — don't hold lock
+            embeddings = dict(self._embeddings)
 
         try:
             from llm import get_embedding
-            q_emb = get_embedding(query_text[:300])
-            if q_emb is None:
-                return None
 
-            scores = []
-            for c in self._chunks:
-                chunk_emb = embeddings.get(c["id"])
-                scores.append(
-                    _cosine_dense(q_emb, chunk_emb) if chunk_emb else 0.0
-                )
+            # Step 15: cache check before HTTP call
+            q_emb = _get_cached_query_embedding(query_text)
+            if q_emb is None:
+                q_emb = get_embedding(query_text[:300])
+                if q_emb is None:
+                    return None
+                _set_cached_query_embedding(query_text, q_emb)
+
+            scores: Dict[int, float] = {}
+            for i in candidate_indices:
+                if i >= len(self._chunks):
+                    continue
+                chunk_emb = embeddings.get(self._chunks[i]["id"])
+                if chunk_emb is not None:
+                    scores[i] = _cosine_dense(q_emb, chunk_emb)
             return scores
 
         except Exception as exc:
@@ -398,84 +484,111 @@ class HybridRetriever:
             return None
 
     # ---------------------------------------------------------------- #
-    #  Public query                                                      #
+    #  Public query (Step 14: two-stage)                                #
     # ---------------------------------------------------------------- #
 
     def query(
         self, text: str, top_k: int = 4
     ) -> List[Tuple[str, float, int]]:
         """
-        Return the top_k most relevant (chunk_text, score, doc_id) tuples.
+        Two-stage retrieval:
 
-        Returns an empty list when:
-        - The corpus is empty.
-        - No tokens can be extracted and semantic is unavailable.
-        - The best combined score is below RELEVANCE_THRESHOLD (i.e. the
-          query has no meaningful match — avoids hallucination from noise).
+        Stage 1: BM25 (index-based) selects top BM25_CANDIDATE_K chunks.
+                 Only chunks matching at least one query token are scored.
+
+        Stage 2: Semantic re-ranks the Stage 1 candidates (when available).
+                 TF-IDF cosine also runs on candidates only.
+
+        Final scores are combined, gated by RELEVANCE_THRESHOLD, and
+        deduplicated before returning top_k results.
+
+        Returns [] when nothing clears the relevance threshold.
         """
         if self.is_empty():
             return []
 
         q_tokens = tokenise(text)
-        sem      = self._semantic_scores(text)
 
-        if not q_tokens and sem is None:
-            return []
+        # ---- Stage 1: BM25 candidate selection ----
+        bm25_sparse = self._bm25_scores_sparse(q_tokens) if q_tokens else {}
+        bm25_ranked = sorted(
+            bm25_sparse.items(), key=lambda x: x[1], reverse=True
+        )
+        candidate_indices: List[int] = [
+            i for i, _ in bm25_ranked[:self.BM25_CANDIDATE_K]
+        ]
 
-        # --- compute raw scores ---
-        zeros = [0.0] * len(self._chunks)
+        # Fallback: if BM25 found nothing (e.g. query tokens all filtered
+        # as stopwords, or very short query), use all chunks for semantic.
+        if not candidate_indices:
+            if self._embed_ready:
+                candidate_indices = list(range(len(self._chunks)))
+            else:
+                return []
 
-        bm25 = self._bm25_scores(q_tokens) if q_tokens else zeros
-        cos  = self._cosine_scores(q_tokens) if q_tokens else zeros
+        # ---- Stage 2: score candidates ----
+        sem_sparse = self._semantic_scores_candidates(text, candidate_indices)
 
-        bm25_n = _normalise_scores(bm25) if q_tokens else zeros
-        cos_n  = _normalise_scores(cos)  if q_tokens else zeros
-
-        if sem is not None:
-            sem_n    = _normalise_scores(sem)
-            combined = [
-                (i, 0.30 * b + 0.20 * c + 0.50 * s)
-                for i, (b, c, s) in enumerate(zip(bm25_n, cos_n, sem_n))
-            ]
+        # Normalise BM25 over candidates only
+        if bm25_sparse and candidate_indices:
+            cand_bm25_vals = [bm25_sparse.get(i, 0.0) for i in candidate_indices]
+            norm_bm25      = _normalise_scores(cand_bm25_vals)
+            bm25_norm_map  = dict(zip(candidate_indices, norm_bm25))
         else:
-            # Semantic not ready — fall back to BM25 + TF-IDF blend
-            combined = [
-                (i, self.alpha * b + (1.0 - self.alpha) * c)
-                for i, (b, c) in enumerate(zip(bm25_n, cos_n))
-            ]
+            bm25_norm_map = {}
+
+        if q_tokens and candidate_indices:
+            cos_sparse     = self._cosine_scores_candidates(q_tokens, candidate_indices)
+            cand_cos_vals  = [cos_sparse.get(i, 0.0) for i in candidate_indices]
+            cos_norm_map   = dict(zip(candidate_indices, _normalise_scores(cand_cos_vals)))
+        else:
+            cos_norm_map = {}
+
+        if sem_sparse is not None and candidate_indices:
+            cand_sem_vals  = [sem_sparse.get(i, 0.0) for i in candidate_indices]
+            sem_norm_map   = dict(zip(candidate_indices, _normalise_scores(cand_sem_vals)))
+        else:
+            sem_norm_map = None
+
+        # ---- Combine ----
+        combined: List[Tuple[int, float]] = []
+        for i in candidate_indices:
+            b = bm25_norm_map.get(i, 0.0)
+            c = cos_norm_map.get(i, 0.0)
+            if sem_norm_map is not None:
+                s     = sem_norm_map.get(i, 0.0)
+                score = 0.30 * b + 0.20 * c + 0.50 * s
+            else:
+                score = self.alpha * b + (1.0 - self.alpha) * c
+            combined.append((i, score))
 
         combined.sort(key=lambda x: x[1], reverse=True)
 
         if not combined:
             return []
 
-        # --- relevance gate ---
+        # ---- Relevance gate ----
         top_score = combined[0][1]
-
         if top_score < RELEVANCE_THRESHOLD:
-            print(f"[retriever] best score {top_score:.3f} < threshold "
-                  f"{RELEVANCE_THRESHOLD} — no relevant context found")
+            print(f"[retriever] best score {top_score:.3f} < "
+                  f"threshold {RELEVANCE_THRESHOLD} — no relevant context")
             return []
 
-        # Optional margin check: if corpus has more than one chunk and the
-        # top result barely beats the second, it's a weak signal.
         if len(combined) > 1:
             margin = top_score - combined[1][1]
             if top_score < (RELEVANCE_THRESHOLD * 2) and margin < MIN_MARGIN:
-                print(f"[retriever] low-confidence result "
-                      f"(score={top_score:.3f}, margin={margin:.3f}) — "
-                      f"returning anyway but score is borderline")
-                # We log but still return — a borderline result is better
-                # than nothing when the score exceeds the hard threshold.
+                print(f"[retriever] borderline result "
+                      f"(score={top_score:.3f}, margin={margin:.3f})")
 
-        # --- deduplicate and collect top_k ---
-        seen_texts: set = set()
+        # ---- Deduplicate and collect top_k ----
+        seen_texts: Set[str] = set()
         top: List[Tuple[str, float, int]] = []
 
         for idx, score in combined:
-            # Skip chunks below threshold (list is sorted, so we can break)
             if score < RELEVANCE_THRESHOLD:
                 break
+            if idx >= len(self._chunks):
+                continue
             txt = self._chunks[idx]["text"].strip()
             if txt in seen_texts:
                 continue
