@@ -89,17 +89,30 @@ def resolve_uri(path: str) -> str:
         Uri              = autoclass("android.net.Uri")
         ctx = PythonActivity.mActivity
         uri = Uri.parse(path)
-        # Get the display name from the content resolver
-        name = "attachment"
+        # Get the display name from the content resolver — used only
+        # to extract the file extension, never used as a path component.
+        raw_name = "attachment"
         cursor = ctx.getContentResolver().query(uri, None, None, None, None)
         if cursor:
             try:
                 if cursor.moveToFirst():
                     idx = cursor.getColumnIndex("_display_name")
                     if idx >= 0:
-                        name = cursor.getString(idx)
+                        raw_name = cursor.getString(idx) or "attachment"
             finally:
                 cursor.close()
+
+        # --- path traversal fix ---
+        # raw_name comes from an untrusted content provider.
+        # os.path.join does NOT protect against traversal sequences like
+        # "../../evil.pdf" — they resolve outside dest_dir.
+        # We extract only the extension and pair it with a UUID so the
+        # final path is always a flat, unpredictable filename inside dest_dir.
+        import uuid
+        raw_suffix = Path(raw_name).suffix.lower()
+        safe_suffix = raw_suffix if raw_suffix in {".pdf", ".txt"} else ".bin"
+        safe_name = uuid.uuid4().hex + safe_suffix   # e.g. "a3f8...c1.pdf"
+
         # Copy bytes to private storage.
         # Use getFd() + os.dup() so Python owns its own fd while the
         # PFD is closed normally — avoids IllegalStateException from
@@ -108,7 +121,7 @@ def resolve_uri(path: str) -> str:
             os.environ.get("ANDROID_PRIVATE", "/tmp"), "attachments"
         )
         os.makedirs(dest_dir, exist_ok=True)
-        dest = os.path.join(dest_dir, name)
+        dest = os.path.join(dest_dir, safe_name)
         pfd = ctx.getContentResolver().openFileDescriptor(uri, "r")
         if pfd is None:
             raise RuntimeError(f"openFileDescriptor returned None for URI: {path}")
@@ -155,12 +168,6 @@ def tokenise(text: str) -> List[str]:
 # ------------------------------------------------------------------ #
 #  Chunking                                                            #
 # ------------------------------------------------------------------ #
-
-def _split_sentences(text: str) -> List[str]:
-    """Naive sentence splitter — avoids pulling in NLTK."""
-    parts = re.split(r"(?<=[.!?])\s+", text.strip())
-    return [p.strip() for p in parts if p.strip()]
-
 
 def chunk_text(text: str) -> List[str]:
     """

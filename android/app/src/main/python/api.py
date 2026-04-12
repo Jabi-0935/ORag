@@ -1,104 +1,191 @@
-from pipeline import (
-    init, chat_direct, get_bootstrap_event, is_model_loaded,
-    register_auto_download_callbacks,
-    ingest_document as pipeline_ingest,
-    list_documents as pipeline_list_docs,
-    delete_document_by_id as pipeline_delete_doc,
-    clear_all_documents as pipeline_clear_docs,
-    ask as pipeline_ask,
-)
-from downloader import set_model_dir, auto_download_default, model_dest_path, QWEN_MODEL
-from runtime.bootstrap import BootstrapState
-import threading
-import json
+"""
+api.py — Public Python surface called from Kotlin via Chaquopy.
 
-_initialized = False
-_init_lock = threading.Lock()
-_is_generating = False
-_stop_flag = False
-_conversation_history = []
+Every method in this file is a direct Kotlin MethodChannel entry point.
+All blocking work (LLM generation, ingestion) is dispatched to the
+single worker thread via worker.submit() so the Kotlin thread returns
+immediately and the UI stays responsive.
+
+Changes from previous version
+------------------------------
+Step 6  — _is_generating boolean and _stop_flag removed entirely.
+          Replaced by worker.submit() which enforces single-task
+          execution through a bounded Queue(maxsize=1).
+          Non-streaming chat() removed — confirmed unused by Flutter.
+          stop_generation() removed — was checking a dead flag.
+
+Step 7  — init_with_progress no longer contains its own download/load
+          orchestration.  It registers a progress-forwarding callback
+          on pipeline.bootstrap and then dispatches pipeline.init()
+          to the worker.  pipeline.bootstrap is now the single source
+          of truth for all init state; get_status() was already reading
+          from it and continues to work unchanged.
+
+Busy sentinel
+-------------
+When submit() returns False (worker occupied) the streaming entry points
+send the string "__BUSY__" as a token via token_callback so Flutter can
+display a "please wait" message without polling.
+"""
+from __future__ import annotations
+
+import json
+import threading
+
+from pipeline import (
+    ask          as pipeline_ask,
+    chat_direct,
+    clear_all_documents as pipeline_clear_docs,
+    delete_document_by_id as pipeline_delete_doc,
+    get_bootstrap_event,
+    init,
+    ingest_document as pipeline_ingest,
+    is_model_loaded,
+    list_documents as pipeline_list_docs,
+)
+from runtime.bootstrap import BootstrapState
+from worker import start_worker, submit
+
+# ------------------------------------------------------------------ #
+#  Module initialisation                                               #
+# ------------------------------------------------------------------ #
+
+# Start the single background worker thread immediately on import.
+# safe to call here — it's idempotent and lightweight.
+start_worker()
+
+# ------------------------------------------------------------------ #
+#  Initialisation state                                                #
+# ------------------------------------------------------------------ #
+
+_initialized     = False
+_init_lock       = threading.Lock()
+
+# Conversation history for direct chat (non-RAG)
+_conversation_history: list = []
 MAX_TURNS = 5
 
-# ---- Progress callback holder (set from Kotlin) ----
-_progress_callback = None
-_progress_lock = threading.Lock()
+# ------------------------------------------------------------------ #
+#  Progress callback bridge (Kotlin → Python → Flutter)               #
+# ------------------------------------------------------------------ #
+
+_progress_callback       = None
+_progress_lock           = threading.Lock()
 
 
-def _set_progress_callback(cb):
+def _set_progress_callback(cb) -> None:
     global _progress_callback
     with _progress_lock:
         _progress_callback = cb
 
 
-def _emit_progress(state, progress, message):
-    """Send a progress event to Flutter via the Kotlin callback."""
+def _emit_progress(state: str, progress: float, message: str) -> None:
+    """
+    Forward a bootstrap event to Flutter via the Kotlin method reference.
+    cb.invoke(jsonString) is Chaquopy's mechanism for calling JVM lambdas.
+    """
     with _progress_lock:
         cb = _progress_callback
-    if cb is not None:
-        try:
-            data = json.dumps({
-                "state": state,
-                "progress": max(0.0, min(1.0, progress)),
-                "message": str(message),
-            })
-            cb.invoke(data)
-        except Exception as e:
-            print(f"[API] progress callback error: {e}")
+    if cb is None:
+        return
+    try:
+        data = json.dumps({
+            "state":    state,
+            "progress": max(0.0, min(1.0, float(progress))),
+            "message":  str(message),
+        })
+        cb.invoke(data)
+    except Exception as exc:
+        print(f"[API] progress callback error: {exc}")
 
 
-def trim_history():
-    global _conversation_history
-    if len(_conversation_history) > MAX_TURNS:
-        _conversation_history = _conversation_history[-MAX_TURNS:]
+# ------------------------------------------------------------------ #
+#  Bootstrap coordinator forwarding                                    #
+# ------------------------------------------------------------------ #
+
+def _forward_bootstrap_events() -> None:
+    """
+    Register callbacks on pipeline.bootstrap so every state transition
+    emitted by pipeline.init() is forwarded to Flutter in real time.
+
+    State mapping
+    -------------
+    bootstrap emits:  emit_downloading(frac, text)  → state="downloading"
+                      emit_ready(text)               → state="ready"
+                      emit_error(text)               → state="error"
+
+    We map these to the progress JSON shape Flutter already expects.
+    """
+    from pipeline import bootstrap
+
+    def _on_progress(frac: float, text: str) -> None:
+        _emit_progress("downloading", frac, text)
+
+    def _on_done(success: bool, message: str) -> None:
+        if success:
+            _emit_progress("ready", 1.0, message)
+        else:
+            _emit_progress("error", 1.0, message)
+
+    bootstrap.register_callbacks(
+        on_progress=_on_progress,
+        on_done=_on_done,
+    )
 
 
-def clear_memory():
-    global _conversation_history
-    _conversation_history = []
+# ------------------------------------------------------------------ #
+#  Internal init task (runs on worker thread)                          #
+# ------------------------------------------------------------------ #
+
+def _do_init(model_path) -> None:
+    """
+    Runs on the worker thread.  Calls pipeline.init() which drives all
+    state transitions through pipeline.bootstrap.  The callbacks
+    registered in _forward_bootstrap_events() forward those events to
+    Flutter via _emit_progress().
+    """
+    global _initialized
+    try:
+        init(model_path)
+        with _init_lock:
+            _initialized = True
+    except Exception as exc:
+        # pipeline.init() already called bootstrap.emit_error() —
+        # no need to emit again, just log.
+        print(f"[API] init failed: {exc}")
 
 
-def stop_generation():
-    global _stop_flag
-    _stop_flag = True
+# ------------------------------------------------------------------ #
+#  Public init API                                                     #
+# ------------------------------------------------------------------ #
 
-
-def wait_for_server():
-    import urllib.request
-    import time
-    from config import QWEN_SERVER_PORT
-    for _ in range(10):
-        try:
-            r = urllib.request.urlopen(f"http://127.0.0.1:{QWEN_SERVER_PORT}/health", timeout=2)
-            if r.getcode() == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(1)
-    raise RuntimeError("Server not ready")
-
-
-def ensure_ready(model_path=None):
+def init_with_path(model_path: str) -> None:
+    """Initialise without progress callbacks (headless / test use)."""
     global _initialized
     if _initialized:
         return
     with _init_lock:
         if not _initialized:
-            init(model_path)   # this will now BLOCK until models are ready
+            init(model_path)
             _initialized = True
 
 
-def init_with_path(model_path):
-    ensure_ready(model_path)
+def init_with_progress(model_path, progress_callback) -> None:
+    """
+    Initialise with real-time progress events pushed to Flutter.
 
+    progress_callback is a Kotlin method reference invoked via
+    .invoke(jsonString).  Events have the shape:
+        {"state": "downloading|loading|ready|error",
+         "progress": 0.0–1.0,
+         "message": "..."}
 
-def init_with_progress(model_path, progress_callback):
-    """Initialize with real-time progress events pushed to Flutter.
-
-    progress_callback is a Kotlin method reference called via .invoke(jsonString).
-    Events have the shape: {"state": "downloading|loading|ready|error", "progress": 0.0-1.0, "message": "..."}
+    This method returns immediately — all blocking work runs on the
+    worker thread.  Progress events are forwarded via _emit_progress().
     """
     global _initialized
 
+    # Fast path: already done.
     if _initialized:
         _emit_progress("ready", 1.0, "AI engine ready.")
         return
@@ -110,301 +197,273 @@ def init_with_progress(model_path, progress_callback):
             _emit_progress("ready", 1.0, "AI engine ready.")
             return
 
-        try:
-            # Step 0: Setup
-            _emit_progress("downloading", 0.0, "Preparing…")
+        # Wire pipeline.bootstrap → _emit_progress before submitting
+        # so no events are missed.
+        _forward_bootstrap_events()
 
-            if model_path:
-                set_model_dir(model_path)
-
-            from storage import init_db
-            from pipeline import retriever, runtime
-            init_db()
-            retriever.reload()
-
-            # Step 1: Download models (with progress)
-            download_done = threading.Event()
-            download_error = [None]
-
-            def on_download_progress(frac, text):
-                _emit_progress("downloading", frac, text)
-
-            def on_download_done(success, message):
-                if not success:
-                    download_error[0] = message
-                download_done.set()
-
-            auto_download_default(
-                on_progress=on_download_progress,
-                on_done=on_download_done,
-            )
-
-            # Wait for download to complete
-            download_done.wait(timeout=600)
-
-            if download_error[0]:
-                _emit_progress("error", 1.0, download_error[0])
-                return
-
-            # Step 2: Load model (with progress)
-            qwen_path = model_dest_path(QWEN_MODEL["filename"])
-
-            if not runtime.is_loaded():
-                _emit_progress("loading", 0.05, "Starting AI engine…")
-
-                def on_load_progress(frac, text):
-                    _emit_progress("loading", frac, text)
-
-                runtime.load(qwen_path, on_progress=on_load_progress)
-
-            # Step 3: Start Nomic for RAG semantic search
-            from downloader import NOMIC_MODEL
-            nomic_path = model_dest_path(NOMIC_MODEL["filename"])
-            import os
-            from runtime.model_runtime import LlamaModelRuntime
-            if os.path.isfile(nomic_path) and isinstance(runtime, LlamaModelRuntime):
-                _emit_progress("loading", 0.95, "Starting embedding engine…")
-                runtime.start_nomic_server_if_needed(nomic_path)
-
-            _initialized = True
-            _emit_progress("ready", 1.0, "AI engine ready!")
-
-        except Exception as e:
-            _emit_progress("error", 1.0, f"Init failed: {e}")
-            raise
+        accepted = submit(_do_init, model_path)
+        if not accepted:
+            # Worker is already running init from a previous call —
+            # callbacks are already registered, nothing to do.
+            print("[API] init already in progress")
 
 
-def get_status():
-    """Return current bootstrap state as a dict for one-shot polling."""
+def get_status() -> dict:
+    """
+    Return current bootstrap state as a dict for one-shot polling.
+    Reads exclusively from pipeline.bootstrap — the single source of
+    truth for all init state.
+    """
     if _initialized:
         return {"state": "ready", "progress": 1.0, "message": "AI engine ready."}
 
     try:
         evt = get_bootstrap_event()
         state_map = {
-            BootstrapState.IDLE: "idle",
+            BootstrapState.IDLE:        "idle",
             BootstrapState.DOWNLOADING: "downloading",
-            BootstrapState.READY: "ready",
-            BootstrapState.ERROR: "error",
+            BootstrapState.READY:       "ready",
+            BootstrapState.ERROR:       "error",
         }
         return {
-            "state": state_map.get(evt.state, "idle"),
+            "state":    state_map.get(evt.state, "idle"),
             "progress": evt.progress,
-            "message": evt.message,
+            "message":  evt.message,
         }
     except Exception:
         return {"state": "idle", "progress": 0.0, "message": ""}
 
 
-def chat(query):
-    global _is_generating, _stop_flag
+# ------------------------------------------------------------------ #
+#  Conversation helpers                                                #
+# ------------------------------------------------------------------ #
 
-    if _is_generating:
-        return "Please wait, processing previous request..."
-
-    _is_generating = True
-    _stop_flag = False
-    print("[CHAT] Request started")
-    
-    try:
-        ensure_ready()
-        wait_for_server()
-        trim_history()
-
-        ok, response = chat_direct(
-            question=query,
-            history=_conversation_history,
-            summary=""
-        )
-
-        if ok:
-            _conversation_history.append((query, response))
-
-        print("[CHAT] Response received")
-        return response if ok else f"ERROR: {response}"
-
-    except Exception as e:
-        return f"ERROR: {str(e)}"
-    finally:
-        _is_generating = False
+def _trim_history() -> None:
+    global _conversation_history
+    if len(_conversation_history) > MAX_TURNS:
+        _conversation_history = _conversation_history[-MAX_TURNS:]
 
 
-def chat_stream(query, token_callback):
-    """Streaming chat — calls token_callback for each generated token.
-
-    ``token_callback`` is a Kotlin method reference passed via Chaquopy.
-    On the Python side it is a ``PyObject`` that we call with ``.invoke(token)``
-    (Chaquopy's standard mechanism for calling JVM method references).
-
-    Returns the full response string when generation finishes.
-    """
-    global _is_generating, _stop_flag
-
-    if _is_generating:
-        return "Please wait, processing previous request..."
-
-    _is_generating = True
-    _stop_flag = False
-    print("[CHAT-STREAM] Request started")
-    
-    try:
-        ensure_ready()
-        wait_for_server()
-
-        def _on_token(token):
-            try:
-                # Chaquopy method references are called via .invoke()
-                token_callback.invoke(token)
-            except Exception as e:
-                print(f"[CHAT-STREAM] callback error: {e}")
-
-        trim_history()
-        ok, response = chat_direct(
-            question=query,
-            history=_conversation_history,
-            summary="",
-            stream_cb=_on_token,
-        )
-
-        if ok:
-            _conversation_history.append((query, response))
-
-        print("[CHAT-STREAM] Response received")
-        return response if ok else f"ERROR: {response}"
-
-    except Exception as e:
-        return f"ERROR: {str(e)}"
-    finally:
-        _is_generating = False
+def clear_memory() -> None:
+    """Clear the in-memory conversation history."""
+    global _conversation_history
+    _conversation_history = []
 
 
 # ------------------------------------------------------------------ #
-#  Document management                                                 #
+#  Streaming chat (direct — no retrieval)                              #
 # ------------------------------------------------------------------ #
 
-def upload_document(file_path):
-    """Ingest a PDF/TXT document into the RAG pipeline.
-    Returns JSON: {"success": true/false, "message": "..."}
+def _do_chat_stream(query: str, token_callback) -> None:
+    """Worker-thread body for chat_stream."""
+    def _on_token(token: str) -> None:
+        try:
+            token_callback.invoke(token)
+        except Exception as exc:
+            print(f"[CHAT-STREAM] token callback error: {exc}")
 
-    NOTE: pipeline.ingest_document() handles resolve_uri internally,
-    so we pass the raw file_path (which may be a content:// URI).
+    _trim_history()
+    ok, response = chat_direct(
+        question=query,
+        history=_conversation_history,
+        summary="",
+        stream_cb=_on_token,
+    )
+
+    if ok:
+        _conversation_history.append((query, response))
+
+    # Send the end-of-stream sentinel so Flutter knows generation is done.
+    try:
+        token_callback.invoke("__DONE__")
+    except Exception:
+        pass
+
+    print(f"[CHAT-STREAM] finished ok={ok}")
+
+
+def chat_stream(query: str, token_callback) -> str:
     """
-    try:
-        ok, msg = pipeline_ingest(file_path)
-        return json.dumps({"success": ok, "message": msg})
-    except Exception as e:
-        return json.dumps({"success": False, "message": f"Error: {e}"})
+    Streaming chat via direct LLM (no retrieval).
 
+    Tokens are delivered to Flutter via token_callback.invoke(token).
+    Returns a status string synchronously (the token stream is async).
 
-def list_docs():
-    """Return JSON array of ingested documents.
-    Each doc: {"id": int, "name": str, "num_chunks": int, "added_at": str}
+    token_callback is a Kotlin method reference (Chaquopy PyObject).
     """
-    try:
-        docs = pipeline_list_docs()
-        return json.dumps(docs)
-    except Exception as e:
-        return json.dumps([])
-
-
-def delete_doc(doc_id):
-    """Delete a document by ID. Returns JSON status."""
-    try:
-        pipeline_delete_doc(int(doc_id))
-        return json.dumps({"success": True, "message": "Document deleted."})
-    except Exception as e:
-        return json.dumps({"success": False, "message": f"Error: {e}"})
-
-
-def clear_docs():
-    """Clear all documents. Returns JSON status."""
-    try:
-        pipeline_clear_docs()
-        return json.dumps({"success": True, "message": "All documents cleared."})
-    except Exception as e:
-        return json.dumps({"success": False, "message": f"Error: {e}"})
+    accepted = submit(_do_chat_stream, query, token_callback)
+    if not accepted:
+        try:
+            token_callback.invoke("__BUSY__")
+        except Exception:
+            pass
+        return "BUSY"
+    return "OK"
 
 
 # ------------------------------------------------------------------ #
 #  RAG streaming query                                                 #
 # ------------------------------------------------------------------ #
 
-def ask_rag(query, token_callback):
-    """RAG streaming query with source attribution.
+def _do_ask_rag(query: str, token_callback) -> None:
+    """Worker-thread body for ask_rag."""
+    def _on_token(token: str) -> None:
+        try:
+            token_callback.invoke(token)
+        except Exception as exc:
+            print(f"[RAG-STREAM] token callback error: {exc}")
 
-    Streams tokens via token_callback, returns JSON with answer + sources:
-    {"answer": "...", "sources": [{"doc_name": "...", "chunk_text": "...", "score": 0.85}]}
-    """
-    global _is_generating, _stop_flag
+    print(f"[RAG-STREAM] query: {query[:80]}")
 
-    if _is_generating:
-        return json.dumps({"answer": "Please wait, processing previous request...", "sources": []})
+    ok, response, sources = pipeline_ask(
+        question=query,
+        stream_cb=_on_token,
+    )
 
-    _is_generating = True
-    _stop_flag = False
-    print("[RAG-STREAM] Request started")
-
+    # Send end-of-stream sentinel
     try:
-        ensure_ready()
-        wait_for_server()
+        token_callback.invoke("__DONE__")
+    except Exception:
+        pass
 
-        def _on_token(token):
+    print(f"[RAG-STREAM] finished ok={ok} sources={len(sources)}")
+
+
+def ask_rag(query: str, token_callback) -> str:
+    """
+    RAG streaming query with source attribution.
+
+    Tokens stream to Flutter via token_callback.invoke(token).
+    Source metadata is sent as a final "__SOURCES__:{json}" token
+    after "__DONE__" so Flutter can display attribution without
+    a second round trip.
+
+    Returns "OK" or "BUSY" synchronously.
+    """
+    def _do_ask_rag_with_sources(query: str, token_callback) -> None:
+        def _on_token(token: str) -> None:
             try:
                 token_callback.invoke(token)
-            except Exception as e:
-                print(f"[RAG-STREAM] callback error: {e}")
+            except Exception as exc:
+                print(f"[RAG-STREAM] token callback error: {exc}")
+
+        print(f"[RAG-STREAM] query: {query[:80]}")
 
         ok, response, sources = pipeline_ask(
             question=query,
             stream_cb=_on_token,
         )
 
-        print("[RAG-STREAM] Response received")
-        return json.dumps({
-            "answer": response if ok else f"ERROR: {response}",
-            "sources": sources,
-        })
+        # End-of-stream sentinel
+        try:
+            token_callback.invoke("__DONE__")
+        except Exception:
+            pass
 
-    except Exception as e:
-        return json.dumps({"answer": f"ERROR: {str(e)}", "sources": []})
-    finally:
-        _is_generating = False
+        # Source metadata as a structured sentinel token
+        try:
+            token_callback.invoke(
+                "__SOURCES__:" + json.dumps(sources)
+            )
+        except Exception:
+            pass
+
+        print(f"[RAG-STREAM] finished ok={ok} sources={len(sources)}")
+
+    accepted = submit(_do_ask_rag_with_sources, query, token_callback)
+    if not accepted:
+        try:
+            token_callback.invoke("__BUSY__")
+        except Exception:
+            pass
+        return "BUSY"
+    return "OK"
+
+
+# ------------------------------------------------------------------ #
+#  Document management                                                 #
+# ------------------------------------------------------------------ #
+
+def upload_document(file_path: str) -> str:
+    """
+    Ingest a PDF/TXT document into the RAG pipeline.
+    Runs synchronously — ingestion is fast enough that it does not need
+    to be dispatched to the worker (no generation involved).
+    Returns JSON: {"success": bool, "message": str}
+    """
+    try:
+        ok, msg = pipeline_ingest(file_path)
+        return json.dumps({"success": ok, "message": msg})
+    except Exception as exc:
+        return json.dumps({"success": False, "message": f"Error: {exc}"})
+
+
+def list_docs() -> str:
+    """
+    Return JSON array of ingested documents.
+    Each entry: {"id": int, "name": str, "num_chunks": int, "added_at": str}
+    """
+    try:
+        return json.dumps(pipeline_list_docs())
+    except Exception:
+        return json.dumps([])
+
+
+def delete_doc(doc_id) -> str:
+    """Delete a document by ID. Returns JSON status."""
+    try:
+        pipeline_delete_doc(int(doc_id))
+        return json.dumps({"success": True, "message": "Document deleted."})
+    except Exception as exc:
+        return json.dumps({"success": False, "message": f"Error: {exc}"})
+
+
+def clear_docs() -> str:
+    """Clear all documents. Returns JSON status."""
+    try:
+        pipeline_clear_docs()
+        return json.dumps({"success": True, "message": "All documents cleared."})
+    except Exception as exc:
+        return json.dumps({"success": False, "message": f"Error: {exc}"})
 
 
 # ------------------------------------------------------------------ #
 #  Engine health                                                       #
 # ------------------------------------------------------------------ #
 
-def get_engine_health():
+def get_engine_health() -> str:
     """Return JSON with model/server health info for the settings screen."""
     try:
-        from pipeline import runtime, retriever
+        from pipeline import retriever, runtime
         from runtime.model_runtime import LlamaModelRuntime
 
         health = {
             "model_loaded": runtime.is_loaded(),
-            "model_name": "",
-            "backend": "",
-            "qwen_ready": False,
-            "nomic_ready": False,
-            "doc_count": 0,
-            "chunk_count": 0,
+            "model_name":   "",
+            "backend":      "",
+            "qwen_ready":   False,
+            "nomic_ready":  False,
+            "doc_count":    0,
+            "chunk_count":  0,
         }
 
         if isinstance(runtime, LlamaModelRuntime):
             h = runtime.health()
-            health["qwen_ready"] = h.qwen_ready
+            health["qwen_ready"]  = h.qwen_ready
             health["nomic_ready"] = h.nomic_ready
-            health["backend"] = h.backend
-            health["model_name"] = h.model_path.split("/")[-1] if h.model_path else ""
+            health["backend"]     = h.backend
+            health["model_name"]  = (
+                h.model_path.split("/")[-1] if h.model_path else ""
+            )
 
         try:
             docs = pipeline_list_docs()
-            health["doc_count"] = len(docs)
+            health["doc_count"]  = len(docs)
             health["chunk_count"] = sum(d.get("num_chunks", 0) for d in docs)
         except Exception:
             pass
 
         return json.dumps(health)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
