@@ -1,80 +1,59 @@
 """
-llm.py â€” LLM backend with automatic three-step fallback.
+llm.py — Unified LLM backend facade.
 
-Priority order:
-  1. llama-cpp-python (Android / Linux, or Windows with a C++ compiler)
-  2. Ollama            (if installed: https://ollama.com)
-  3. llama-server      (bundled pre-built Windows CPU binary â€” zero install)
+Phase 3 refactor: this file is now a thin orchestration layer that delegates to:
+  - llm_runtime.py  — process lifecycle, Android detection, binary management
+  - llm_client.py   — HTTP /completion calls to the Qwen llama-server
+  - embedding.py    — Nomic embedding server + /embedding API + query cache
+  - prompt.py       — ChatML prompt builders
 
-External interface is identical for all backends:
-    load(model_path, ...)  â†’ None
-    generate(prompt, ...)  â†’ str
-    is_loaded()            â†’ bool
-    unload()               â†’ None
-
-Prompts are built for Qwen ChatML in this app runtime.
+This file retains:
+  - LlamaCppModel class (the unified backend facade with fallback chain)
+  - Thinking-token stream filter
+  - Module-level singleton: llm = LlamaCppModel()
 """
 from __future__ import annotations
 
-import os
-import glob
-import json
 import re
-import subprocess
 import threading
-import time
-import zipfile
-from pathlib import Path
 from typing import Callable, Optional
 
-
-from config import NOMIC_SERVER_PORT, QWEN_SERVER_PORT
-
-# App root: rag/llm.py â†’ ../..
-_APP_ROOT = Path(__file__).resolve().parent.parent.parent
-
 # ------------------------------------------------------------------ #
-#  Android detection                                                   #
+#  Re-exports for backward compatibility                               #
 # ------------------------------------------------------------------ #
+# Modules that historically imported from llm.py can continue to do so.
+# New code should import from the specific module directly.
 
-# Paths injected from Kotlin (MainActivity) before Python init runs.
-# mActivity is not accessible from Chaquopy in Flutter's threading model,
-# so these are the single source of truth on Android.
-_ANDROID_NATIVE_LIB_DIR: Optional[str] = None
-_ANDROID_FILES_DIR: Optional[str] = None
+from llm_runtime import (
+    set_android_paths,
+    is_android as _is_android,
+    android_private_dir as _android_private_dir,
+    server_exe as _server_exe,
+    extract_zip_if_needed as _extract_zip_if_needed,
+    start_llama_server as _start_llama_server,
+    stop_llama_server as _stop_llama_server,
+    get_android_binary_error,
+    probe_port,
+    qwen_port,
+    list_available_models,
+    _optimal_threads,
+)
 
+from llm_client import (
+    gen_via_server as _gen_via_server,
+)
 
-def set_android_paths(native_lib_dir: str, files_dir: str) -> None:
-    """Called from Kotlin to inject Android-specific paths before init."""
-    global _ANDROID_NATIVE_LIB_DIR, _ANDROID_FILES_DIR
-    _ANDROID_NATIVE_LIB_DIR = native_lib_dir
-    _ANDROID_FILES_DIR = files_dir
-    print(f"[llm] Android paths injected: native_lib={native_lib_dir}, files={files_dir}")
+from embedding import (
+    get_embedding,
+    start_nomic_server,
+    stop_nomic_server,
+    nomic_port,
+)
 
-
-def _is_android() -> bool:
-    """Reliably detect Android runtime via multiple indicators."""
-    if _ANDROID_NATIVE_LIB_DIR is not None:
-        return True
-    if os.environ.get("ANDROID_PRIVATE"):
-        return True
-    try:
-        if os.path.isfile("/system/build.prop"):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _android_private_dir() -> str:
-    """Return the best available private directory for the app on Android."""
-    if _ANDROID_FILES_DIR:
-        return _ANDROID_FILES_DIR
-    priv = os.environ.get("ANDROID_PRIVATE", "")
-    if priv:
-        return priv
-    return ""
-
+from prompt import (
+    build_rag_prompt,
+    build_direct_prompt,
+)
 
 
 # ------------------------------------------------------------------ #
@@ -106,577 +85,12 @@ def _ollama_reachable() -> bool:
 
 
 # ------------------------------------------------------------------ #
-#  llama-server subprocess backend                                     #
-# ------------------------------------------------------------------ #
-
-_LLAMASERVER_PORT  = QWEN_SERVER_PORT   # Qwen generation server
-
-
-def _optimal_threads() -> int:
-    """Pick a sensible thread count for the device.
-    Use half the logical CPUs (targets performance cores on big.LITTLE),
-    clamped to [2, 8].  Falls back to 4 if cpu_count is unavailable.
-    """
-    try:
-        import os as _os
-        count = _os.cpu_count() or 4
-        return max(2, min(8, count // 2))
-    except Exception:
-        return 4
-_LLAMASERVER_PROC  = None
-_LLAMASERVER_LOCK  = threading.Lock()
-_ANDROID_EXE_PATH: Optional[str] = None   # set once by _ensure_android_binary
-_ANDROID_BINARY_ERROR: str = ""            # stores last extraction failure reason
-
-_NOMIC_PORT  = NOMIC_SERVER_PORT         # Nomic embedding server
-_NOMIC_PROC  = None
-_NOMIC_LOCK  = threading.Lock()
-
-
-def _bin_dir() -> Path:
-    return _APP_ROOT / "llamacpp_bin"
-
-
-def _ensure_android_binary() -> Optional[str]:
-    """
-    Android-specific: locate the bundled ARM64 llama-server binary.
-
-    The binary is bundled as lib/arm64-v8a/llama-server.so (or legacy
-    libllama_server.so) in the APK.
-    Android's package installer extracts all .so files from lib/<abi>/ to
-    the app's nativeLibraryDir at install time with correct SELinux labels
-    that allow execve() â€” the ONLY reliable way to run native code on
-    modern Android (code_cache / data dirs block exec via SELinux).
-
-    No runtime extraction needed â€” just find the pre-installed path.
-    """
-    global _ANDROID_EXE_PATH, _ANDROID_BINARY_ERROR
-    if _ANDROID_EXE_PATH is not None:
-        return _ANDROID_EXE_PATH
-
-    if not _is_android():
-        return None
-
-    priv = _android_private_dir()
-    dbg: list[str] = [f"ANDROID_PRIVATE={priv}"]
-    print(f"[llama-server] _is_android()=True, priv={priv}")
-
-    # Primary: use path injected from Kotlin (most reliable)
-    native_lib_dir: Optional[str] = _ANDROID_NATIVE_LIB_DIR
-    if native_lib_dir:
-        dbg.append(f"nativeLibraryDir (from Kotlin)={native_lib_dir}")
-    else:
-        # Fallback: try mActivity (may not work in Flutter threading context)
-        try:
-            from android import mActivity  # type: ignore
-            native_lib_dir = str(mActivity.getApplicationInfo().nativeLibraryDir)
-            dbg.append(f"nativeLibraryDir (from mActivity)={native_lib_dir}")
-        except Exception as e:
-            dbg.append(f"getApplicationInfo failed: {e}")
-
-    if native_lib_dir:
-        candidates = ["llama-server.so", "libllama_server.so"]
-        for name in candidates:
-            exe = os.path.join(native_lib_dir, name)
-            dbg.append(f"checking {exe}")
-            if os.path.isfile(exe):
-                sz = os.path.getsize(exe)
-                dbg.append(f"FOUND: {name} ({sz // 1024} KB)")
-                print(f"[llama-server] native lib: {exe} ({sz // 1024} KB)")
-                try:
-                    Path(priv, "llama_debug.txt").write_text("\n".join(dbg))
-                except Exception:
-                    pass
-                _ANDROID_EXE_PATH = exe
-                return exe
-
-        # List what IS in nativeLibraryDir so we can diagnose wrong names
-        try:
-            present = os.listdir(native_lib_dir)
-            dbg.append(f"NOT FOUND. nativeLibraryDir contains: {present}")
-            _ANDROID_BINARY_ERROR = (
-                f"No llama server binary found in {native_lib_dir}.\n"
-                f"Expected one of: {candidates}\n"
-                f"Directory contains: {present}"
-            )
-        except Exception as le:
-            dbg.append(f"listdir failed: {le}")
-            _ANDROID_BINARY_ERROR = (
-                f"No llama server binary found in {native_lib_dir} "
-                f"(listdir failed: {le})"
-            )
-    else:
-        _ANDROID_BINARY_ERROR = "Could not determine nativeLibraryDir"
-
-    try:
-        Path(priv, "llama_debug.txt").write_text("\n".join(dbg))
-    except Exception:
-        pass
-    print(f"[llama-server] binary not found: {_ANDROID_BINARY_ERROR}")
-    return None
-
-
-def _server_exe():
-    # 1. Android: use bundled ARM64 binary from nativeLibraryDir
-    if _is_android():
-        return _ensure_android_binary()  # returns str path or None
-
-    # 2. Desktop: look in llamacpp_bin/ dir
-    for p in [_bin_dir() / "llama-server.exe", _bin_dir() / "llama-server"]:
-        if p.exists():
-            return p
-    return None
-
-
-def _extract_zip_if_needed() -> bool:
-    if _is_android():
-        return _server_exe() is not None   # on Android, skip ZIP handling
-    if _server_exe() is not None:
-        return True
-    zip_path = _APP_ROOT / "llamacpp_bin.zip"
-    if not zip_path.exists():
-        return False
-    dest = _bin_dir()
-    dest.mkdir(parents=True, exist_ok=True)
-    print(f"[llama-server] Extracting {zip_path.name} ...")
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(dest)
-    print("[llama-server] Extraction complete.")
-    return _server_exe() is not None
-
-
-
-def _wait_for_server(port: int, timeout: int = 120,
-                     on_tick: Optional[Callable[[float, str], None]] = None) -> bool:
-    import urllib.request
-    url = f"http://127.0.0.1:{port}/health"
-    deadline = time.time() + timeout
-    started  = time.time()
-    last_tick = 0.0
-    while time.time() < deadline:
-        proc = _LLAMASERVER_PROC if port == _LLAMASERVER_PORT else _NOMIC_PROC
-        if proc is not None and proc.poll() is not None:
-            print(f"[llama-server port={port}] process exited early (code={proc.returncode})")
-            return False
-        try:
-            with urllib.request.urlopen(url, timeout=2) as r:
-                if r.status == 200:
-                    if on_tick:
-                        on_tick(1.0, "AI engine ready!")
-                    return True
-        except Exception:
-            pass
-        elapsed = time.time() - started
-        if on_tick and elapsed - last_tick >= 1.0:
-            last_tick = elapsed
-            pct = min(elapsed / timeout, 0.95)
-            on_tick(pct, f"Loading model into memory\u2026 {int(elapsed)}s")
-        time.sleep(0.5)
-    return False
-
-
-def _probe_port(port: int) -> bool:
-    """Return True if a llama-server is already responding on *port*."""
-    import urllib.request
-    try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/health", timeout=1
-        ) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-def probe_port(port: int) -> bool:
-    """Public health probe helper for runtime components."""
-    return _probe_port(port)
-
-
-def qwen_port() -> int:
-    return _LLAMASERVER_PORT
-
-
-def nomic_port() -> int:
-    return _NOMIC_PORT
-
-
-def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
-                        on_progress: Optional[Callable[[float, str], None]] = None) -> bool:
-    global _LLAMASERVER_PROC, _ANDROID_BINARY_ERROR
-    exe = _server_exe()
-    if exe is None:
-        return False
-    with _LLAMASERVER_LOCK:
-        if _LLAMASERVER_PROC is not None:
-            return True
-        # Fast-path: the Android foreground service may have already started
-        # llama-server.  If the port is responding we don't need a new process.
-        if _probe_port(_LLAMASERVER_PORT):
-            print("[llama-server] Already running (owned by service) â€” skipping launch.")
-            if on_progress:
-                on_progress(1.0, "AI engine ready!")
-            return True
-        cmd = [
-            str(exe),
-            "--model", model_path,
-            "--ctx-size", str(n_ctx),              # dynamic
-            "--threads", str(n_threads),           # dynamic
-            "--threads-batch", str(n_threads),
-            "--port", str(_LLAMASERVER_PORT),      # FIXED
-            "--host", "127.0.0.1",
-
-            # performance flags (important)
-            "--flash-attn", "on",
-            "--cont-batching",
-            "--cache-type-k", "q8_0",
-            "--cache-type-v", "q8_0",
-        ]
-        print(f"[llama-server] Starting: {cmd[0]}")
-        print(f"  Model: {Path(model_path).name}")
-        print("  Loading model into memory, please wait ...")
-        if on_progress:
-            on_progress(0.02, f"Starting AI engine\u2026 ({Path(model_path).name})")
-        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        log_file = None
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_path = os.path.join(priv, "llama_server.log")
-                log_file = open(log_path, "wb")
-            except Exception:
-                pass
-        try:
-            _LLAMASERVER_PROC = subprocess.Popen(
-                cmd,
-                stdout=log_file if log_file else subprocess.DEVNULL,
-                stderr=log_file if log_file else subprocess.DEVNULL,
-                creationflags=cf,
-            )
-        except Exception as exc:
-            if log_file:
-                log_file.close()
-            _ANDROID_BINARY_ERROR = f"Popen failed: {type(exc).__name__}: {exc}"
-            print(f"[llama-server] Launch failed: {exc}")
-            return False
-    ready = _wait_for_server(_LLAMASERVER_PORT, timeout=180, on_tick=on_progress)
-    if not ready:
-        _stop_llama_server()
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_path = os.path.join(priv, "llama_server.log")
-                if os.path.isfile(log_path):
-                    with open(log_path, "rb") as lf:
-                        lf.seek(max(0, os.path.getsize(log_path) - 1000))
-                        tail = lf.read().decode("utf-8", errors="replace")
-                    _ANDROID_BINARY_ERROR = f"Server log tail: {tail}"
-                    print(f"[llama-server] server log: {tail}")
-            except Exception:
-                pass
-        print("[llama-server] Timed out / crashed waiting for server.")
-        return False
-    if log_file:
-        try:
-            log_file.close()
-        except Exception:
-            pass
-    print("[llama-server] Server ready.")
-    return True
-
-
-def start_nomic_server(model_path: str,
-                       n_ctx: int = 128,
-                       n_threads: int = 0) -> bool:
-    """
-    Start a *second* llama-server process on _NOMIC_PORT (8083) loaded
-    with the Nomic embedding model.  No-op if already running.
-    Returns True when the server is ready.
-    """
-    if n_threads == 0:
-        n_threads = _optimal_threads()
-    global _NOMIC_PROC
-    exe = _server_exe()
-    if exe is None:
-        print("[nomic-server] no llama-server binary available")
-        return False
-    with _NOMIC_LOCK:
-        if _NOMIC_PROC is not None and _NOMIC_PROC.poll() is None:
-            return True   # already running
-        cmd = [
-            str(exe),
-            "--model",         model_path,
-            "--ctx-size",      str(n_ctx),
-            "--threads",       str(n_threads),
-            "--threads-batch", str(n_threads),
-            "--port",          str(_NOMIC_PORT),
-            "--host",          "127.0.0.1",
-            "--embedding",
-            "--flash-attn",    "on",
-            "--cache-type-k",  "q8_0",
-            "--cache-type-v",  "q8_0",
-        ]
-        print(f"[nomic-server] Starting on port {_NOMIC_PORT}")
-        print(f"  Model: {Path(model_path).name}")
-        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        log_file = None
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_file = open(os.path.join(priv, "nomic_server.log"), "wb")
-            except Exception:
-                pass
-        try:
-            _NOMIC_PROC = subprocess.Popen(
-                cmd,
-                stdout=log_file if log_file else subprocess.DEVNULL,
-                stderr=log_file if log_file else subprocess.DEVNULL,
-                creationflags=cf,
-            )
-        except Exception as exc:
-            if log_file:
-                log_file.close()
-            print(f"[nomic-server] Launch failed: {exc}")
-            return False
-    ready = _wait_for_server(_NOMIC_PORT, timeout=120)
-    if log_file:
-        try:
-            log_file.close()
-        except Exception:
-            pass
-    if ready:
-        print("[nomic-server] Ready.")
-    else:
-        print("[nomic-server] Timed out / crashed.")
-    return ready
-
-
-def stop_nomic_server() -> None:
-    global _NOMIC_PROC
-    with _NOMIC_LOCK:
-        if _NOMIC_PROC is not None:
-            try:
-                _NOMIC_PROC.terminate()
-                _NOMIC_PROC.wait(timeout=5)
-            except Exception:
-                try:
-                    _NOMIC_PROC.kill()
-                except Exception:
-                    pass
-            _NOMIC_PROC = None
-
-
-def get_embedding(text: str) -> "list[float] | None":
-    """
-    Get a dense embedding vector for *text* via the DEDICATED Nomic
-    llama-server running on the Nomic port.
-
-    IMPORTANT: Do NOT fall back to the Qwen generation server.
-    Qwen is a chat model — its /embedding endpoint returns garbage
-    vectors that poison retrieval scores and cause hallucinated answers.
-
-    Returns None if the Nomic server is not available.
-    """
-    # ONLY use the dedicated Nomic embedding server
-    if _NOMIC_PROC is not None and _NOMIC_PROC.poll() is None:
-        port = _NOMIC_PORT
-    elif _probe_port(_NOMIC_PORT):
-        # Service-owned process on the Nomic port
-        port = _NOMIC_PORT
-    else:
-        return None
-    import urllib.request
-    import urllib.error
-    payload = json.dumps({"content": text}).encode()
-    url = f"http://127.0.0.1:{port}/embedding"
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            # Newer llama-server: [{"index": 0, "embedding": [[float, ...]]}]
-            # Older llama-server: {"embedding": [float, ...]}
-            if isinstance(data, list):
-                emb = data[0].get("embedding") if data else None
-            else:
-                emb = data.get("embedding")
-            # Unwrap double-nested [[floats]] â†’ [floats]
-            if isinstance(emb, list) and emb and isinstance(emb[0], list):
-                emb = emb[0]
-            if isinstance(emb, list) and emb:
-                return emb
-            return None
-    except Exception as e:
-        print(f"[embedding] failed: {e}")
-        return None
-
-
-def _stop_llama_server() -> None:
-    global _LLAMASERVER_PROC
-    with _LLAMASERVER_LOCK:
-        if _LLAMASERVER_PROC is not None:
-            try:
-                _LLAMASERVER_PROC.terminate()
-                _LLAMASERVER_PROC.wait(timeout=5)
-            except Exception:
-                try:
-                    _LLAMASERVER_PROC.kill()
-                except Exception:
-                    pass
-            _LLAMASERVER_PROC = None
-
-
-def _gen_via_server(
-    prompt: str, max_tokens: int, temperature: float,
-    top_p: float, stream_cb,
-) -> str:
-    import urllib.request
-    import urllib.error
-    # llama-server native endpoint: /completion  (NOT /v1/completions)
-    # Note: do NOT include "cache_prompt" â€” it is rejected (HTTP 400) by
-    # many llama-server builds.
-    payload = json.dumps({
-        "prompt":      prompt,
-        "n_predict":   max_tokens,
-        "temperature": temperature,
-        "top_p":       top_p,
-        "stream":      stream_cb is not None,
-        "stop":        ["<|im_end|>", "<|im_start|>", "</s>"],
-    }).encode()
-    url = f"http://127.0.0.1:{_LLAMASERVER_PORT}/completion"
-    print(f"[DEBUG] Sending request to: {url}")
-    print(f"[DEBUG] Prompt: {prompt[:100]}")
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={"Content-Type": "application/json"}, method="POST",
-    )
-    for attempt in range(2):
-        try:
-            if stream_cb is not None:
-                full = ""
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    # TODO Phase 3: wire GenerationController cancellation
-                    # token here instead of the removed api._stop_flag check.
-                    for raw in resp:
-                        line = raw.decode("utf-8").strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            token = json.loads(data).get("content", "")
-                            full += token
-                            stream_cb(token)
-                        except Exception:
-                            pass
-                return full
-            else:
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    body = json.loads(resp.read())
-                return body.get("content", "")
-        except urllib.error.HTTPError as e:
-            try:
-                err_body = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                err_body = "(no response body)"
-            if attempt == 1:
-                raise RuntimeError(f"llama-server HTTP {e.code}: {err_body[:300]}") from e
-        except OSError as e:
-            if attempt == 1:
-                raise RuntimeError(f"llama-server unreachable: {e}") from e
-        
-        # Give it a tiny bit of breathing room before second try
-        import time
-        time.sleep(1)
-        
-    return ""
-
-
-# ------------------------------------------------------------------ #
-#  Model directory                                                     #
-# ------------------------------------------------------------------ #
-
-def _ensure_writable_dir(path: Optional[str]) -> Optional[str]:
-    if not path:
-        return None
-    try:
-        os.makedirs(path, exist_ok=True)
-        return path
-    except Exception:
-        return None
-
-
-def _android_package_name_from_private() -> Optional[str]:
-    # First preference: Android API package name.
-    try:
-        from android import mActivity  # type: ignore
-
-        pkg = str(mActivity.getPackageName())
-        if pkg and "." in pkg:
-            return pkg
-    except Exception:
-        pass
-
-    # Fallback: parse ANDROID_PRIVATE only.
-    # Expected shapes include:
-    # /data/user/0/<package>
-    # /data/user/0/<package>/files
-    # /data/data/<package>
-    raw = _android_private_dir()
-    parts = [p for p in raw.split("/") if p]
-    if len(parts) >= 4 and parts[0] == "data" and parts[1] in {"user", "data"}:
-        if parts[1] == "user" and len(parts) >= 5:
-            pkg = parts[3]
-        else:
-            pkg = parts[2]
-        if pkg and "." in pkg:
-            return pkg
-    return None
-
-
-def _android_app_external_models_dir_direct() -> Optional[str]:
-    pkg = _android_package_name_from_private()
-    if not pkg:
-        return None
-    return f"/storage/emulated/0/Android/data/{pkg}/files/models"
-
-def _models_dir() -> str:
-    # Option 1: prefer app-specific external storage, then fallback to internal.
-    if _is_android():
-        direct_ext = _ensure_writable_dir(_android_app_external_models_dir_direct())
-        if direct_ext:
-            return direct_ext
-
-        try:
-            from android import mActivity  # type: ignore
-
-            ext_dir = mActivity.getExternalFilesDir(None)
-            if ext_dir is not None:
-                ext_models = _ensure_writable_dir(os.path.join(str(ext_dir), "models"))
-                if ext_models:
-                    return ext_models
-        except Exception:
-            pass
-
-    base = _android_private_dir() or os.path.expanduser("~")
-    return os.path.join(base, "models")
-
-
-def list_available_models() -> list[str]:
-    """Return list of .gguf file paths found in the models directory."""
-    pattern = os.path.join(_models_dir(), "*.gguf")
-    return sorted(glob.glob(pattern))
-
-
-# ------------------------------------------------------------------ #
 #  LLM singleton                                                       #
 # ------------------------------------------------------------------ #
 
 class LlamaCppModel:
     """
-    Unified LLM backend â€” tries each backend in priority order:
+    Unified LLM backend — tries each backend in priority order:
       1. llama-cpp-python  (in-process, best performance)
       2. Ollama            (if the server is running on localhost:11434)
       3. llama-server      (auto-extracted from llamacpp_bin.zip)
@@ -742,7 +156,7 @@ class LlamaCppModel:
                 return
 
             if _is_android():
-                detail = _ANDROID_BINARY_ERROR or "unknown error"
+                detail = get_android_binary_error() or "unknown error"
                 raise RuntimeError(
                     f"No LLM backend available.\n\n"
                     f"Binary extraction failed: {detail}\n\n"
@@ -762,6 +176,7 @@ class LlamaCppModel:
             import ollama as _ol
         except ImportError:
             raise RuntimeError("ollama package not installed.")
+        from pathlib import Path
         stem  = Path(model_path).stem.lower()
         clean = "".join(c if (c.isalnum() or c == "-") else "-" for c in stem)
         ollama_name = clean[:50].strip("-") or "local-gguf"
@@ -803,7 +218,8 @@ class LlamaCppModel:
 
     def connect_external_server(self, model_path: str) -> None:
         """Attach to an already-running llama-server process (service-owned)."""
-        if not _probe_port(_LLAMASERVER_PORT):
+        from llm_client import probe_qwen_port
+        if not probe_qwen_port():
             raise RuntimeError("llama-server is not healthy on localhost")
         with self._lock:
             self._unload_internal()
@@ -821,11 +237,13 @@ class LlamaCppModel:
         temperature: float = DEFAULT_TEMP,
         top_p:       float = DEFAULT_TOP_P,
         stream_cb:   Optional[Callable[[str], None]] = None,
+        cancel_event: Optional["threading.Event"] = None,
     ) -> str:
         """
         Generate a response.  stream_cb (if given) is called with each
         new token fragment as it arrives.  Returns the full response text.
         Thinking-model reasoning blocks are automatically stripped.
+        cancel_event: if set, the streaming loop breaks early (user stop).
         """
         if self._backend == "none":
             raise RuntimeError("No model loaded. Call load() first.")
@@ -838,11 +256,11 @@ class LlamaCppModel:
             filtered_cb  = think_filter
 
         if self._backend == "llama_cpp":
-            raw = self._gen_llama_cpp(prompt, max_tokens, temperature, top_p, filtered_cb)
+            raw = self._gen_llama_cpp(prompt, max_tokens, temperature, top_p, filtered_cb, cancel_event)
         elif self._backend == "ollama":
-            raw = self._gen_ollama(prompt, max_tokens, temperature, top_p, filtered_cb)
+            raw = self._gen_ollama(prompt, max_tokens, temperature, top_p, filtered_cb, cancel_event)
         else:
-            raw = _gen_via_server(prompt, max_tokens, temperature, top_p, filtered_cb)
+            raw = _gen_via_server(prompt, max_tokens, temperature, top_p, filtered_cb, cancel_event)
 
         if think_filter is not None:
             think_filter.flush()
@@ -850,7 +268,7 @@ class LlamaCppModel:
         # Strip thinking blocks from the full returned string too
         return _strip_thinking(raw)
 
-    def _gen_llama_cpp(self, prompt, max_tokens, temp, top_p, stream_cb):
+    def _gen_llama_cpp(self, prompt, max_tokens, temp, top_p, stream_cb, cancel_event=None):
         with self._lock:
             if stream_cb:
                 full = ""
@@ -861,6 +279,8 @@ class LlamaCppModel:
                     top_p       = top_p,
                     stream      = True,
                 ):
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
                     token = chunk["choices"][0]["text"]
                     full += token
                     stream_cb(token)
@@ -875,7 +295,7 @@ class LlamaCppModel:
                 )
                 return out["choices"][0]["text"]
 
-    def _gen_ollama(self, prompt, max_tokens, temp, top_p, stream_cb):
+    def _gen_ollama(self, prompt, max_tokens, temp, top_p, stream_cb, cancel_event=None):
         import ollama as _ol
         options = {
             "temperature": temp,
@@ -890,6 +310,8 @@ class LlamaCppModel:
                 options = options,
                 stream  = True,
             ):
+                if cancel_event is not None and cancel_event.is_set():
+                    break
                 token = chunk.response
                 full += token
                 stream_cb(token)
@@ -924,7 +346,7 @@ def _strip_thinking(text: str) -> str:
 
 class _ThinkingStreamFilter:
     """
-    Wraps a stream_cb so that tokens inside <think>â€¦</think> blocks are
+    Wraps a stream_cb so that tokens inside <think>…</think> blocks are
     suppressed; only the real answer tokens are forwarded to the UI.
     """
     def __init__(self, cb):
@@ -937,10 +359,10 @@ class _ThinkingStreamFilter:
         self._buf += token
         while True:
             if self._depth == 0:
-                # Not inside a think block â€” look for opening tag
+                # Not inside a think block — look for opening tag
                 idx = self._buf.find("<think>")
                 if idx == -1:
-                    # No think tag anywhere â€” flush all buffered tokens
+                    # No think tag anywhere — flush all buffered tokens
                     if self._buf:
                         self._cb(self._buf)
                         self._buf = ""
@@ -952,10 +374,10 @@ class _ThinkingStreamFilter:
                     self._buf  = self._buf[idx + len("<think>"):]
                     self._depth = 1
             else:
-                # Inside a think block â€” look for closing tag
+                # Inside a think block — look for closing tag
                 idx = self._buf.find("</think>")
                 if idx == -1:
-                    # Haven't seen closing tag yet â€” keep buffering
+                    # Haven't seen closing tag yet — keep buffering
                     break
                 else:
                     self._buf   = self._buf[idx + len("</think>"):]
@@ -967,77 +389,6 @@ class _ThinkingStreamFilter:
         if self._buf and self._depth == 0:
             self._cb(self._buf)
             self._buf = ""
-
-
-# ------------------------------------------------------------------ #
-#  Prompt builder                                                      #
-# ------------------------------------------------------------------ #
-
-def build_rag_prompt(context_chunks: list[str], question: str) -> str:
-    """
-    Build a RAG prompt using Qwen 2.5's ChatML instruction format.
-    (<|im_start|> / <|im_end|> tokens)
-    Each chunk is capped at 800 chars to stay within ctx=768 budget.
-    """
-    # Cap each chunk so total prompt stays within context window:
-    # 2 chunks Ã— 800 chars â‰ˆ 300 tokens, + system (~80) + question (~30) = ~410 tokens
-    # leaving ~350 tokens for the reply (max_tok=256 + overhead).
-    capped = [c[:800] for c in context_chunks]
-    ctx_text = "\n\n---\n\n".join(capped)
-    system_msg = (
-        "You are a helpful assistant. "
-        "Answer ONLY based on the provided context. "
-        "Write at least 2-3 sentences â€” never give a one-word answer. "
-        "Do NOT just repeat the question. "
-        "If the answer is not in the context, say \"I don't know.\". "
-        "Reply with only your final answer â€” no reasoning steps."
-    )
-    return (
-        f"<|im_start|>system\n{system_msg}<|im_end|>\n"
-        f"<|im_start|>user\n"
-        f"Context:\n{ctx_text}\n\nQuestion: {question}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
-    )
-
-
-def build_direct_prompt(
-    question: str,
-    history: list[tuple[str, str]] | None = None,
-    summary: str = "",
-) -> str:
-    """
-    Build a plain conversational prompt using Qwen 2.5's ChatML format.
-    summary : compressed plain-text of older turns (no LLM call, first sentences).
-    history : last 3 verbatim (user, assistant) pairs.
-    """
-    system_msg = (
-        "You are a knowledgeable, helpful AI assistant. "
-        "Answer the user's question directly and completely. "
-        "Write at least 2-3 sentences. "
-        "Do NOT just repeat the question or echo back one word. "
-        "Reply with only your final answer — no reasoning steps."
-    )
-    # Append compressed older context to system message so it takes fewer
-    # tokens than full ChatML turns but still informs the model.
-    if summary.strip():
-        system_msg += (
-            "\n\nEarlier in this conversation (summary):\n"
-            + summary.strip()
-        )
-    parts: list[str] = [f"<|im_start|>system\n{system_msg}<|im_end|>\n"]
-
-    # Last 3 verbatim turns
-    for user_msg, asst_msg in (history or [])[-3:]:
-        parts.append(
-            f"<|im_start|>user\n{user_msg}<|im_end|>\n"
-            f"<|im_start|>assistant\n{asst_msg}<|im_end|>\n"
-        )
-
-    parts.append(
-        f"<|im_start|>user\n{question}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
-    )
-    return "".join(parts)
 
 
 # Module-level singleton

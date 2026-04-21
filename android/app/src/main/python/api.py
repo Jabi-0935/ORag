@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import threading
 
+from generation_controller import GenerationController
 from pipeline import (
     ask          as pipeline_ask,
     chat_direct,
@@ -51,8 +52,12 @@ from worker import start_worker, submit
 # ------------------------------------------------------------------ #
 
 # Start the single background worker thread immediately on import.
-# safe to call here — it's idempotent and lightweight.
 start_worker()
+
+# Active generation controller — one per task, checked in the streaming
+# loop to support cancellation from the Stop button.
+_active_controller: GenerationController | None = None
+_controller_lock = threading.Lock()
 
 # ------------------------------------------------------------------ #
 #  Initialisation state                                                #
@@ -256,6 +261,11 @@ def clear_memory() -> None:
 
 def _do_chat_stream(query: str, token_callback) -> None:
     """Worker-thread body for chat_stream."""
+    global _active_controller
+    controller = GenerationController()
+    with _controller_lock:
+        _active_controller = controller
+
     def _on_token(token: str) -> None:
         try:
             token_callback.invoke(token)
@@ -268,17 +278,20 @@ def _do_chat_stream(query: str, token_callback) -> None:
         history=_conversation_history,
         summary="",
         stream_cb=_on_token,
+        cancel_event=controller.event,
     )
 
     if ok:
         _conversation_history.append((query, response))
 
-    # Send the end-of-stream sentinel so Flutter knows generation is done.
+    # Send the end-of-stream sentinel so Kotlin's latch fires.
     try:
         token_callback.invoke("__DONE__")
     except Exception:
         pass
 
+    with _controller_lock:
+        _active_controller = None
     print(f"[CHAT-STREAM] finished ok={ok}")
 
 
@@ -305,42 +318,23 @@ def chat_stream(query: str, token_callback) -> str:
 #  RAG streaming query                                                 #
 # ------------------------------------------------------------------ #
 
-def _do_ask_rag(query: str, token_callback) -> None:
-    """Worker-thread body for ask_rag."""
-    def _on_token(token: str) -> None:
-        try:
-            token_callback.invoke(token)
-        except Exception as exc:
-            print(f"[RAG-STREAM] token callback error: {exc}")
-
-    print(f"[RAG-STREAM] query: {query[:80]}")
-
-    ok, response, sources = pipeline_ask(
-        question=query,
-        stream_cb=_on_token,
-    )
-
-    # Send end-of-stream sentinel
-    try:
-        token_callback.invoke("__DONE__")
-    except Exception:
-        pass
-
-    print(f"[RAG-STREAM] finished ok={ok} sources={len(sources)}")
-
 
 def ask_rag(query: str, token_callback) -> str:
     """
     RAG streaming query with source attribution.
 
     Tokens stream to Flutter via token_callback.invoke(token).
-    Source metadata is sent as a final "__SOURCES__:{json}" token
-    after "__DONE__" so Flutter can display attribution without
-    a second round trip.
+    Source metadata is sent as "__SOURCES__:{json}" BEFORE "__DONE__"
+    so Kotlin can capture it before the completion latch fires.
 
     Returns "OK" or "BUSY" synchronously.
     """
     def _do_ask_rag_with_sources(query: str, token_callback) -> None:
+        global _active_controller
+        controller = GenerationController()
+        with _controller_lock:
+            _active_controller = controller
+
         def _on_token(token: str) -> None:
             try:
                 token_callback.invoke(token)
@@ -352,15 +346,11 @@ def ask_rag(query: str, token_callback) -> str:
         ok, response, sources = pipeline_ask(
             question=query,
             stream_cb=_on_token,
+            cancel_event=controller.event,
         )
 
-        # End-of-stream sentinel
-        try:
-            token_callback.invoke("__DONE__")
-        except Exception:
-            pass
-
-        # Source metadata as a structured sentinel token
+        # Source metadata FIRST (before __DONE__) so Kotlin captures
+        # it before the completion latch fires.
         try:
             token_callback.invoke(
                 "__SOURCES__:" + json.dumps(sources)
@@ -368,6 +358,14 @@ def ask_rag(query: str, token_callback) -> str:
         except Exception:
             pass
 
+        # End-of-stream sentinel LAST
+        try:
+            token_callback.invoke("__DONE__")
+        except Exception:
+            pass
+
+        with _controller_lock:
+            _active_controller = None
         print(f"[RAG-STREAM] finished ok={ok} sources={len(sources)}")
 
     accepted = submit(_do_ask_rag_with_sources, query, token_callback)
@@ -378,6 +376,26 @@ def ask_rag(query: str, token_callback) -> str:
             pass
         return "BUSY"
     return "OK"
+
+
+# ------------------------------------------------------------------ #
+#  Generation cancellation (Stop button)                               #
+# ------------------------------------------------------------------ #
+
+def cancel_generation() -> None:
+    """
+    Cancel the active LLM generation (if any).
+
+    Called from Kotlin when the user taps the Stop button.
+    Sets the cancel event which is checked in the HTTP streaming loop
+    (llm_client.gen_via_server) — the loop breaks immediately and
+    the worker thread completes normally (sending __DONE__).
+    """
+    with _controller_lock:
+        ctrl = _active_controller
+    if ctrl is not None:
+        ctrl.cancel()
+        print("[API] Generation cancelled by user")
 
 
 # ------------------------------------------------------------------ #

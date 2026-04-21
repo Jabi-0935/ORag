@@ -229,26 +229,35 @@ def compute_tfidf_vecs(
 
 def process_document(path: str) -> List[dict]:
     """
-    Full pipeline: extract → chunk → tokenise → TF-IDF.
+    Canonical full pipeline: resolve URI → extract → chunk → tokenise → TF-IDF.
+
+    This is the single entry point for turning a file path (or Android
+    content:// URI) into a list of chunk dicts ready for DB insertion.
+    pipeline.ingest_document() calls this instead of duplicating the steps.
 
     Returns list of chunk dicts:
         {chunk_idx, text, tokens, tfidf_vec}
+
+    Returns an empty list if no text could be extracted.
     """
-    raw_text   = extract_text(path)
-    raw_chunks = chunk_text(raw_text)
+    resolved   = resolve_uri(path)
+    raw_text   = extract_text(resolved)
+    if not raw_text or not raw_text.strip():
+        return []
+    raw_chunks  = chunk_text(raw_text)
+    if not raw_chunks:
+        return []
     token_lists = [tokenise(c) for c in raw_chunks]
     tfidf_vecs, _ = compute_tfidf_vecs(token_lists)
 
-    result = []
-    for idx, (text, tokens, vec) in enumerate(
-        zip(raw_chunks, token_lists, tfidf_vecs)
-    ):
-        result.append(
-            {
-                "chunk_idx": idx,
-                "text": text,
-                "tokens": tokens,
-                "tfidf_vec": vec,
-            }
+    return [
+        {
+            "chunk_idx": idx,
+            "text":      text,
+            "tokens":    tokens,
+            "tfidf_vec": vec,
+        }
+        for idx, (text, tokens, vec) in enumerate(
+            zip(raw_chunks, token_lists, tfidf_vecs)
         )
-    return result
+    ]

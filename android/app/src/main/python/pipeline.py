@@ -5,35 +5,18 @@ This module is the single source of truth for all pipeline operations.
 It owns the module-level retriever, runtime, and bootstrap coordinator
 and is the only place that calls into storage, retriever, and llm.
 
-Changes from previous version
-------------------------------
-Step 2  — ingest_document now calls storage.ingest_document_atomic()
-          instead of the three-step insert_document / insert_chunks /
-          update_doc_chunk_count sequence.  A crash at any point leaves
-          the DB in its previous consistent state.
+Phase 1 changes:
+  Step 2  — ingest_document uses storage.ingest_document_atomic()
+  Step 4  — retriever mutations: add_chunks / remove_doc / clear
+  Step 7  — Bootstrap state consolidated through pipeline.bootstrap
+  Step 8  — stdout _debug_stream wrappers removed
+  Step 9  — _generate_with_timeout() added
+  Step 10 — doc name cache added
 
-Step 4  — retriever.reload() replaced with incremental mutations:
-            ingest_document    → retriever.add_chunks()
-            delete_document_by_id → retriever.remove_doc()
-            clear_all_documents   → retriever.clear()
-          init() keeps retriever.reload() — the one legitimate full-load.
-
-Step 7  — Bootstrap state machine consolidated.  All init paths drive
-          state through the single pipeline.bootstrap coordinator.
-          register_auto_download_callbacks and _start_auto_download
-          are removed (dead code — nothing called them).
-
-Step 8  — _debug_stream wrappers removed from chat_direct() and ask().
-          stream_cb is passed directly to runtime.generate().
-          Per-token stdout writes are gone from the hot path.
-
-Step 9  — _generate_with_timeout() wraps every runtime.generate() call.
-          Generation that exceeds GENERATION_TIMEOUT_S raises RuntimeError
-          so the worker thread can surface a clean error to the UI.
-
-Step 10 — _get_doc_name_cache() / _invalidate_doc_cache() replace the
-          per-query storage_list_documents() call in ask().  The cache
-          is a module-level dict, invalidated on every corpus mutation.
+Phase 3 changes:
+  Step 16 — auto_download_default dead import removed
+  Step 16 — ingest_document now calls chunker.process_document()
+             instead of duplicating extract/chunk/tokenise/tfidf inline
 """
 from __future__ import annotations
 
@@ -50,12 +33,11 @@ from runtime.model_runtime import LlamaModelRuntime, ModelRuntime
 from downloader import (
     NOMIC_MODEL,
     QWEN_MODEL,
-    auto_download_default,
     auto_download_default_sync,
     model_dest_path,
     set_model_dir,
 )
-from llm import build_direct_prompt, build_rag_prompt
+from prompt import build_direct_prompt, build_rag_prompt
 from retriever import HybridRetriever
 from storage import (
     delete_document as storage_delete_document,
@@ -117,6 +99,7 @@ def _generate_with_timeout(
     prompt:    str,
     stream_cb: Optional[Callable[[str], None]] = None,
     timeout:   int = GENERATION_TIMEOUT_S,
+    cancel_event = None,
 ) -> str:
     """
     Run runtime.generate() in a worker thread and join with a timeout.
@@ -128,7 +111,8 @@ def _generate_with_timeout(
 
     def _run() -> None:
         try:
-            result[0] = runtime.generate(prompt, stream_cb=stream_cb).strip()
+            result[0] = runtime.generate(prompt, stream_cb=stream_cb,
+                                         cancel_event=cancel_event).strip()
         except Exception as e:
             exc_holder[0] = e
 
@@ -252,9 +236,11 @@ def ingest_document(
     Invalidates the doc name cache so ask() sees the new document.
     """
     try:
-        from chunker import resolve_uri, extract_text, chunk_text, tokenise, compute_tfidf_vecs
+        from chunker import process_document, resolve_uri
 
-        # --- resolve path (handles Android content:// URIs) ---
+        # Resolve URI first so we can extract a display name.
+        # process_document also calls resolve_uri internally, but that
+        # second call is a no-op on a real path (content:// already resolved).
         resolved = resolve_uri(file_path)
         name     = Path(resolved).name
         print(f"[INGEST] Starting: {name}")
@@ -264,37 +250,15 @@ def ingest_document(
         if os.path.isfile(nomic_path) and isinstance(runtime, LlamaModelRuntime):
             runtime.start_nomic_server_if_needed(nomic_path)
 
-        # --- extract text ---
-        raw_text = extract_text(resolved)
-        if not raw_text or not raw_text.strip():
-            result = (False, f"No text could be extracted from '{name}'")
+        # --- extract, chunk, tokenise, TF-IDF in one canonical call ---
+        # process_document is the single source of truth for the full
+        # text → chunk pipeline. No duplication with chunker internals.
+        chunks = process_document(resolved)
+        if not chunks:
+            result = (False, f"No content could be extracted from '{name}'")
             if on_done:
                 on_done(*result)
             return result
-        print(f"[INGEST] Extracted {len(raw_text)} chars")
-
-        # --- chunk + TF-IDF ---
-        raw_chunks = chunk_text(raw_text)
-        if not raw_chunks:
-            result = (False, f"Document '{name}' produced 0 chunks")
-            if on_done:
-                on_done(*result)
-            return result
-
-        token_lists = [tokenise(c) for c in raw_chunks]
-        tfidf_vecs, _ = compute_tfidf_vecs(token_lists)
-
-        chunks = [
-            {
-                "chunk_idx": idx,
-                "text":      text,
-                "tokens":    tokens,
-                "tfidf_vec": vec,
-            }
-            for idx, (text, tokens, vec) in enumerate(
-                zip(raw_chunks, token_lists, tfidf_vecs)
-            )
-        ]
         print(f"[INGEST] {len(chunks)} chunks ready")
 
         # --- atomic DB write (Step 2) ---
@@ -409,6 +373,7 @@ def chat_direct(
     summary:   str            = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done:   Optional[Callable[[bool, str], None]] = None,
+    cancel_event = None,
 ) -> tuple[bool, str]:
     """
     Chat directly with the LLM — no retrieval.
@@ -416,6 +381,7 @@ def chat_direct(
     history : last N verbatim (user, assistant) turn pairs.
     summary : compressed plain-text summary of older turns.
     stream_cb: called with each token as it is generated.
+    cancel_event: threading.Event — set to cancel generation.
     """
     try:
         if not runtime.is_loaded():
@@ -423,8 +389,8 @@ def chat_direct(
         else:
             prompt = build_direct_prompt(question, history, summary)
             print("[CHAT] Generation started…")
-            # stream_cb passed directly — no stdout wrapper (Step 8)
-            answer = _generate_with_timeout(prompt, stream_cb=stream_cb)
+            answer = _generate_with_timeout(prompt, stream_cb=stream_cb,
+                                             cancel_event=cancel_event)
             print("[CHAT] Generation finished.")
             result = (True, answer)
 
@@ -445,6 +411,7 @@ def ask(
     question:  str,
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done:   Optional[Callable[[bool, str], None]] = None,
+    cancel_event = None,
 ) -> tuple[bool, str, list]:
     """
     Run a RAG query synchronously.
@@ -498,7 +465,8 @@ def ask(
 
         # --- generation (Step 8: no stdout wrapper / Step 9: timeout) ---
         print("[RAG] Generation started…")
-        answer = _generate_with_timeout(prompt, stream_cb=stream_cb)
+        answer = _generate_with_timeout(prompt, stream_cb=stream_cb,
+                                         cancel_event=cancel_event)
         print(f"[RAG] Generation finished. Answer length: {len(answer)}")
 
         result = (True, answer, sources)

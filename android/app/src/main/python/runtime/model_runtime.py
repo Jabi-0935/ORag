@@ -1,21 +1,17 @@
-﻿"""
+"""
 Runtime abstraction for model loading, generation, embeddings and health.
+
+Phase 3: Imports updated to use the new split modules
+(llm_runtime, embedding) instead of monolithic llm.py.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol, Optional, Callable
 
-
-from llm import (
-    llm,
-    get_embedding,
-    list_available_models,
-    probe_port,
-    qwen_port,
-    nomic_port,
-    start_nomic_server,
-)
+from llm import llm
+from llm_runtime import list_available_models, probe_port, qwen_port
+from embedding import get_embedding, start_nomic_server, nomic_port, probe_nomic_port
 
 
 @dataclass(frozen=True)
@@ -61,8 +57,9 @@ class LlamaModelRuntime:
     def connect_external_server(self, model_path: str) -> None:
         llm.connect_external_server(model_path)
 
-    def generate(self, prompt: str, stream_cb: Optional[Callable[[str], None]] = None) -> str:
-        return llm.generate(prompt, stream_cb=stream_cb)
+    def generate(self, prompt: str, stream_cb: Optional[Callable[[str], None]] = None,
+                 cancel_event=None) -> str:
+        return llm.generate(prompt, stream_cb=stream_cb, cancel_event=cancel_event)
 
     def embedding(self, text: str) -> list[float] | None:
         return get_embedding(text)
@@ -70,7 +67,7 @@ class LlamaModelRuntime:
     def health(self) -> RuntimeHealth:
         return RuntimeHealth(
             qwen_ready=probe_port(qwen_port()),
-            nomic_ready=probe_port(nomic_port()),
+            nomic_ready=probe_nomic_port(),
             backend=llm.backend_name,
             model_path=llm.model_path or "",
         )
@@ -88,7 +85,7 @@ class LlamaModelRuntime:
         return llm.backend_name
 
     def start_nomic_server_if_needed(self, model_path: str) -> None:
-        if not probe_port(nomic_port()):
+        if not probe_nomic_port():
             start_nomic_server(model_path)
 
     def available_models(self) -> list[str]:

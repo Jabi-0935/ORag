@@ -241,7 +241,29 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _stopGeneration() async {
-    await _platform.stop();
+    // 1. Signal server-side cancellation first — this sets the
+    //    GenerationController event so the HTTP streaming loop breaks.
+    try {
+      await _platform.stop();
+    } catch (_) {}
+
+    // 2. Cancel the local stream subscription and reset UI state.
+    _chatSub?.cancel();
+    _chatSub = null;
+
+    if (mounted) {
+      setState(() {
+        // Mark the last AI message as done
+        if (_messages.isNotEmpty && _messages.last.isAssistant) {
+          final lastMsg = _messages.last;
+          if (lastMsg.isStreaming) {
+            lastMsg.isStreaming = false;
+            if (lastMsg.isEmpty) lastMsg.text = '(generation stopped)';
+          }
+        }
+        _isGenerating = false;
+      });
+    }
   }
 
   Future<void> _clearMemory() async {

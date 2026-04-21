@@ -8,6 +8,8 @@ import com.chaquo.python.PyObject
 import com.chaquo.python.android.AndroidPlatform
 import io.flutter.embedding.android.FlutterActivity
 import android.util.Log
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
 	private val CHANNEL = "orag"
@@ -24,10 +26,61 @@ class MainActivity : FlutterActivity() {
 	private var initSink: EventChannel.EventSink? = null
 
 	/**
+	 * Latch used to block the Kotlin handler thread until Python's
+	 * worker finishes generation (signalled by the __DONE__ sentinel).
+	 * Without this, the handler returns immediately because
+	 * api.chat_stream() / api.ask_rag() are non-blocking (they
+	 * dispatch to a background worker and return "OK" at once).
+	 */
+	@Volatile
+	private var streamDoneLatch: CountDownLatch? = null
+
+	/**
+	 * Captured sources JSON from the __SOURCES__ sentinel token.
+	 * Set by onStreamToken when it intercepts a __SOURCES__:{json} token
+	 * during RAG streaming, then read by the ragStream handler to include
+	 * in the MethodChannel result.
+	 */
+	@Volatile
+	private var capturedSourcesJson: String? = null
+
+	/**
 	 * Called from Python (via Chaquopy invoke) for each generated token.
-	 * Forwards the token to the Flutter EventChannel sink on the UI thread.
+	 * Runs synchronously on the Python worker thread.
+	 *
+	 * Intercepts sentinel tokens (__DONE__, __BUSY__, __SOURCES__) and
+	 * only forwards real content tokens to the Flutter EventChannel sink.
 	 */
 	fun onStreamToken(token: String) {
+		// Intercept __DONE__ — Python's end-of-stream sentinel.
+		// Send __STREAM_END__ to Flutter and signal the latch so the
+		// Kotlin handler thread can return the MethodChannel result.
+		if (token == "__DONE__") {
+			runOnUiThread {
+				streamSink?.success("__STREAM_END__")
+			}
+			streamDoneLatch?.countDown()
+			return
+		}
+
+		// Intercept __BUSY__ — worker queue is full.
+		if (token == "__BUSY__") {
+			runOnUiThread {
+				streamSink?.success("__BUSY__")
+			}
+			streamDoneLatch?.countDown()
+			return
+		}
+
+		// Intercept __SOURCES__:{json} — RAG source attribution data.
+		// Store the JSON for later inclusion in the MethodChannel result.
+		// This arrives BEFORE __DONE__ (Python sends sources first).
+		if (token.startsWith("__SOURCES__:")) {
+			capturedSourcesJson = token.removePrefix("__SOURCES__:")
+			return
+		}
+
+		// Regular content token — forward to Flutter
 		runOnUiThread {
 			streamSink?.success(token)
 		}
@@ -51,14 +104,12 @@ class MainActivity : FlutterActivity() {
 				Python.start(AndroidPlatform(this))
 			}
 
-			// Inject Android paths into llm module before any init runs.
-			// mActivity is not accessible from Python in this Flutter/Chaquopy
-			// context, so we push nativeLibraryDir from Kotlin directly.
+			// Inject Android paths into llm_runtime module before any init runs.
 			try {
-				val llm = Python.getInstance().getModule("llm")
+				val llmRuntime = Python.getInstance().getModule("llm_runtime")
 				val nativeLibDir = applicationInfo.nativeLibraryDir
 				val filesDir = filesDir.absolutePath
-				llm.callAttr("set_android_paths", nativeLibDir, filesDir)
+				llmRuntime.callAttr("set_android_paths", nativeLibDir, filesDir)
 				Log.i("ORAG", "Injected nativeLibraryDir=$nativeLibDir, filesDir=$filesDir")
 			} catch (e: Exception) {
 				Log.w("ORAG", "Failed to inject Android paths", e)
@@ -108,8 +159,6 @@ class MainActivity : FlutterActivity() {
 					Thread {
 						try {
 							val api = ensureApiModule()
-
-							// Use init_with_progress which pushes events via onInitProgress
 							api.callAttr(
 								"init_with_progress",
 								modelPath,
@@ -121,7 +170,6 @@ class MainActivity : FlutterActivity() {
 							}
 							Log.i("ORAG", "Python init completed: $modelPath")
 						} catch (e: Exception) {
-							// Emit error via init channel too
 							val errorJson = """{"state":"error","progress":1.0,"message":"${e.message?.replace("\"", "\\\"") ?: "Unknown error"}"}"""
 							runOnUiThread {
 								initSink?.success(errorJson)
@@ -137,7 +185,6 @@ class MainActivity : FlutterActivity() {
 							val api = ensureApiModule()
 							val statusObj = api.callAttr("get_status")
 
-							// Convert Python dict to Kotlin Map
 							val statusMap = HashMap<String, Any?>()
 							val pyDict = statusObj.asMap()
 							for ((key, value) in pyDict) {
@@ -166,15 +213,25 @@ class MainActivity : FlutterActivity() {
 						try {
 							val api = ensureApiModule()
 
-							// Pass a Kotlin method reference to Python.
-							// Chaquopy makes it callable via .invoke() on
-							// the Python side.
+							// Create a latch so we block this thread until
+							// Python's worker finishes (sends __DONE__).
+							val latch = CountDownLatch(1)
+							streamDoneLatch = latch
+
+							// chat_stream() returns "OK" immediately (non-blocking).
+							// Tokens arrive asynchronously via onStreamToken().
 							val response = api.callAttr(
 								"chat_stream", query, this@MainActivity::onStreamToken
 							)
 
+							// If the worker rejected the task (BUSY), the __BUSY__
+							// sentinel already signalled the latch in onStreamToken.
+							// Otherwise, wait for __DONE__ (up to 5 minutes).
+							latch.await(300, TimeUnit.SECONDS)
+
 							runOnUiThread {
-								streamSink?.success("__STREAM_END__")
+								// __STREAM_END__ was already sent by onStreamToken
+								// when it saw __DONE__. Just return the result.
 								result.success(response.toString())
 							}
 						} catch (e: Exception) {
@@ -183,37 +240,25 @@ class MainActivity : FlutterActivity() {
 								result.error("ERROR", e.message, null)
 							}
 							Log.e("ORAG", "chatStream failed", e)
+						} finally {
+							streamDoneLatch = null
 						}
 					}.start()
 
-				} else if (call.method == "chat") {
-					val query = call.argument<String>("query") ?: ""
-
-					Thread {
-						try {
-							val response = ensureApiModule().callAttr("chat", query)
-
-							runOnUiThread {
-								result.success(response.toString())
-							}
-						} catch (e: Exception) {
-							runOnUiThread {
-								result.error("ERROR", e.message, null)
-							}
-						}
-					}.start()
 				} else if (call.method == "stop") {
+					// Cancel active generation via the GenerationController.
+					// This sets a threading.Event that the HTTP streaming loop
+					// checks — the loop breaks early and the worker completes.
 					Thread {
 						try {
-							ensureApiModule().callAttr("stop_generation")
+							ensureApiModule().callAttr("cancel_generation")
 							runOnUiThread { result.success(true) }
 						} catch (e: Exception) {
-							runOnUiThread {
-								result.error("ERROR", e.message, null)
-							}
+							runOnUiThread { result.success(true) }  // non-fatal
 						}
 					}.start()
-					} else if (call.method == "clearMemory") {
+
+				} else if (call.method == "clearMemory") {
 					Thread {
 						try {
 							ensureApiModule().callAttr("clear_memory")
@@ -277,13 +322,28 @@ class MainActivity : FlutterActivity() {
 					Thread {
 						try {
 							val api = ensureApiModule()
+							capturedSourcesJson = null
+
+							val latch = CountDownLatch(1)
+							streamDoneLatch = latch
+
+							// ask_rag() returns "OK" immediately (non-blocking).
+							// Python sends __SOURCES__ then __DONE__ via callback.
 							val response = api.callAttr(
 								"ask_rag", query, this@MainActivity::onStreamToken
 							)
+
+							// Wait for __DONE__ (up to 5 minutes)
+							latch.await(300, TimeUnit.SECONDS)
+
+							// By now, __SOURCES__ has been captured (it arrives
+							// before __DONE__), and __STREAM_END__ was sent to
+							// Flutter by onStreamToken.
+							val sources = capturedSourcesJson ?: "[]"
+							val resultJson = """{"status":"${response.toString()}","sources":$sources}"""
+
 							runOnUiThread {
-								streamSink?.success("__STREAM_END__")
-								// response is JSON with answer + sources
-								result.success(response.toString())
+								result.success(resultJson)
 							}
 						} catch (e: Exception) {
 							runOnUiThread {
@@ -291,10 +351,12 @@ class MainActivity : FlutterActivity() {
 								result.error("ERROR", e.message, null)
 							}
 							Log.e("ORAG", "ragStream failed", e)
+						} finally {
+							streamDoneLatch = null
 						}
 					}.start()
 
-					} else if (call.method == "getEngineHealth") {
+				} else if (call.method == "getEngineHealth") {
 					Thread {
 						try {
 							val response = ensureApiModule().callAttr("get_engine_health")

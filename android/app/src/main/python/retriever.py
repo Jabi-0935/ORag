@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import math
 import threading
-from collections import OrderedDict
 from typing import Dict, List, Optional, Set, Tuple
 
 from chunker import tokenise
@@ -63,30 +62,6 @@ B  = 0.75   # length normalisation weight
 RELEVANCE_THRESHOLD = 0.15
 MIN_MARGIN          = 0.05
 
-# ------------------------------------------------------------------ #
-#  Query embedding cache (Step 15)                                    #
-# ------------------------------------------------------------------ #
-MAX_QUERY_CACHE    = 64
-_query_cache:      OrderedDict    = OrderedDict()
-_query_cache_lock: threading.Lock = threading.Lock()
-
-
-def _get_cached_query_embedding(text: str) -> Optional[list]:
-    with _query_cache_lock:
-        if text in _query_cache:
-            _query_cache.move_to_end(text)   # mark as recently used
-            return _query_cache[text]
-    return None
-
-
-def _set_cached_query_embedding(text: str, emb: list) -> None:
-    with _query_cache_lock:
-        if text in _query_cache:
-            _query_cache.move_to_end(text)
-        else:
-            if len(_query_cache) >= MAX_QUERY_CACHE:
-                _query_cache.popitem(last=False)   # evict oldest
-            _query_cache[text] = emb
 
 
 # ------------------------------------------------------------------ #
@@ -326,7 +301,7 @@ class HybridRetriever:
         update in-memory cache. Version guard aborts stale threads.
         """
         try:
-            from llm import get_embedding
+            from embedding import get_embedding
             from storage import save_chunk_embedding
 
             with self._embed_lock:
@@ -460,15 +435,15 @@ class HybridRetriever:
             embeddings = dict(self._embeddings)
 
         try:
-            from llm import get_embedding
+            from embedding import get_embedding, get_cached_query_embedding, set_cached_query_embedding
 
             # Step 15: cache check before HTTP call
-            q_emb = _get_cached_query_embedding(query_text)
+            q_emb = get_cached_query_embedding(query_text)
             if q_emb is None:
                 q_emb = get_embedding(query_text[:300])
                 if q_emb is None:
                     return None
-                _set_cached_query_embedding(query_text, q_emb)
+                set_cached_query_embedding(query_text, q_emb)
 
             scores: Dict[int, float] = {}
             for i in candidate_indices:

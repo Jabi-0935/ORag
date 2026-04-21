@@ -109,6 +109,9 @@ class PlatformService {
   /// The stream emits individual tokens as they arrive.
   /// When generation is finished, '__STREAM_END__' is emitted then the
   /// stream effectively finishes (caller should cancel subscription).
+  ///
+  /// Sentinel tokens (__DONE__, __BUSY__, __SOURCES__) are filtered out
+  /// by the Kotlin bridge before reaching this stream.
   Stream<String> chatStream(String query) {
     final controller = StreamController<String>();
 
@@ -119,6 +122,14 @@ class PlatformService {
         if (token == '__STREAM_END__') {
           sub?.cancel();
           controller.close();
+        } else if (token == '__BUSY__') {
+          // Worker is occupied — surface as error
+          controller.addError('AI is busy processing another request.');
+          sub?.cancel();
+          controller.close();
+        } else if (token == '__DONE__' || token.startsWith('__SOURCES__:')) {
+          // Sentinel tokens that should have been intercepted by Kotlin.
+          // Filter them out as a safety net.
         } else {
           controller.add(token);
         }
@@ -137,7 +148,10 @@ class PlatformService {
     return controller.stream;
   }
 
-  /// Stop current generation.
+  /// Stop current LLM generation.
+  /// Signals the Python GenerationController to break out of the
+  /// HTTP streaming loop. The worker thread finishes normally and
+  /// sends __DONE__, so the latch and stream clean up properly.
   Future<void> stop() async {
     try {
       await _method.invokeMethod('stop');
@@ -203,8 +217,12 @@ class PlatformService {
 
   // ---- RAG query ----
 
-  /// Start a RAG streaming query. Streams tokens, then returns sources via
-  /// the MethodChannel result (JSON with answer + sources).
+  /// Start a RAG streaming query.
+  ///
+  /// Tokens stream via EventChannel. Source attribution is captured by
+  /// Kotlin from the __SOURCES__ sentinel token and included in the
+  /// MethodChannel result JSON: {"status": "OK", "sources": [...]}
+  ///
   /// Returns a record of (tokenStream, sourcesFuture).
   ({Stream<String> tokens, Future<Map<String, dynamic>> result}) ragStream(String query) {
     final tokenController = StreamController<String>();
@@ -217,6 +235,12 @@ class PlatformService {
         if (token == '__STREAM_END__') {
           sub?.cancel();
           tokenController.close();
+        } else if (token == '__BUSY__') {
+          tokenController.addError('AI is busy processing another request.');
+          sub?.cancel();
+          tokenController.close();
+        } else if (token == '__DONE__' || token.startsWith('__SOURCES__:')) {
+          // Safety net: Kotlin intercepts these, but filter here too.
         } else {
           tokenController.add(token);
         }
@@ -227,9 +251,10 @@ class PlatformService {
       },
     );
 
-    // Invoke ragStream — the result contains sources JSON
+    // Invoke ragStream — the result now contains sources JSON from Kotlin
     _method.invokeMethod('ragStream', {'query': query}).then((result) {
       try {
+        // Kotlin returns: {"status": "OK", "sources": [...]}
         final json = jsonDecode(result as String) as Map<String, dynamic>;
         resultCompleter.complete(json);
       } catch (e) {
@@ -275,4 +300,3 @@ class PlatformService {
     }
   }
 }
-

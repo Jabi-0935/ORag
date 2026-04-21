@@ -4,22 +4,22 @@ storage.py — SQLite-backed document and chunk store.
 Stores document metadata and text chunks with their TF-IDF vectors
 and dense embedding vectors.
 
-Changes from previous version:
+Phase 1 changes:
   - tfidf_vec: pickle BLOB → JSON TEXT (security + portability)
   - embedding: new TEXT column (JSON float array, NULL until computed)
   - ingest_document_atomic: single-connection transaction replaces the
-    three-step insert_document / insert_chunks / update_doc_chunk_count
-    sequence that could leave the DB inconsistent on crash
+    old three-step sequence that could leave the DB inconsistent
   - _migrate_pickle_to_json: one-time migration run at init_db()
-  - Removed: get_chunk_texts_by_ids (unused)
-  - Kept (deprecated): insert_document, insert_chunks,
-    update_doc_chunk_count — will be removed in Phase 3 once all
-    call sites have been confirmed clear
+
+Phase 3 changes:
+  - Removed deprecated insert_document, insert_chunks,
+    update_doc_chunk_count — all call sites now use ingest_document_atomic
+  - pickle import kept (needed by _migrate_pickle_to_json for legacy rows)
 """
 import sqlite3
 import json
 import os
-import pickle
+import pickle   # used only by _migrate_pickle_to_json for legacy row conversion
 from typing import List
 
 
@@ -269,53 +269,4 @@ def save_chunk_embedding(chunk_id: int, embedding: List[float]) -> None:
         conn.execute(
             "UPDATE chunks SET embedding=? WHERE id=?",
             (json.dumps(embedding), chunk_id),
-        )
-
-
-# ------------------------------------------------------------------ #
-#  Deprecated helpers — kept for Phase 3 removal                      #
-#  Do not use in new code. Use ingest_document_atomic instead.        #
-# ------------------------------------------------------------------ #
-
-def insert_document(name: str, path: str) -> int:
-    """Deprecated: use ingest_document_atomic."""
-    with get_conn() as conn:
-        existing = conn.execute(
-            "SELECT id FROM documents WHERE path=?", (path,)
-        ).fetchone()
-        if existing:
-            doc_id = existing[0]
-            conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
-            return doc_id
-        cur = conn.execute(
-            "INSERT INTO documents(name, path) VALUES (?, ?)", (name, path)
-        )
-        return cur.lastrowid
-
-
-def update_doc_chunk_count(doc_id: int, count: int) -> None:
-    """Deprecated: use ingest_document_atomic."""
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE documents SET num_chunks=? WHERE id=?", (count, doc_id)
-        )
-
-
-def insert_chunks(doc_id: int, chunks: List[dict]) -> None:
-    """Deprecated: use ingest_document_atomic."""
-    rows = [
-        (
-            doc_id,
-            c["chunk_idx"],
-            c["text"],
-            json.dumps(c["tokens"]),
-            json.dumps(c["tfidf_vec"]),   # JSON even in deprecated path
-        )
-        for c in chunks
-    ]
-    with get_conn() as conn:
-        conn.executemany(
-            "INSERT INTO chunks(doc_id, chunk_idx, text, tokens, tfidf_vec) "
-            "VALUES (?,?,?,?,?)",
-            rows,
         )
