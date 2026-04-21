@@ -88,7 +88,7 @@ class InitOverlay extends StatelessWidget {
       case InitState.idle:
         return 'Starting O-RAG';
       case InitState.downloading:
-        return 'Downloading AI Model';
+        return 'Downloading';
       case InitState.loading:
         return 'Loading AI Engine';
       case InitState.ready:
@@ -105,7 +105,7 @@ class InitOverlay extends StatelessWidget {
       case InitState.downloading:
         return 'This only happens once. Please stay on Wi-Fi.';
       case InitState.loading:
-        return 'Loading model into memory…';
+        return 'Loading AI engine…';
       case InitState.ready:
         return 'AI is ready to chat!';
       case InitState.error:

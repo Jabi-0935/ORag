@@ -153,11 +153,11 @@ def init_with_progress(model_path, progress_callback):
                 _emit_progress("loading", 0.05, "Starting AI engine…")
 
                 def on_load_progress(frac, text):
-                    _emit_progress("loading", frac, text)
+                    _emit_progress("loading", frac, "Loading AI engine…")
 
                 runtime.load(qwen_path, on_progress=on_load_progress)
 
-            # Step 3: Start Nomic for RAG semantic search
+            # Step 3: Start embedding engine for RAG semantic search
             from downloader import NOMIC_MODEL
             nomic_path = model_dest_path(NOMIC_MODEL["filename"])
             import os
@@ -376,15 +376,16 @@ def ask_rag(query, token_callback):
 # ------------------------------------------------------------------ #
 
 def get_engine_health():
-    """Return JSON with model/server health info for the settings screen."""
+    """Return JSON with model/server health info for the settings screen.
+    Model names and filenames are intentionally hidden from the UI.
+    """
     try:
         from pipeline import runtime, retriever
         from runtime.model_runtime import LlamaModelRuntime
 
         health = {
             "model_loaded": runtime.is_loaded(),
-            "model_name": "",
-            "backend": "",
+            "backend": "On-device",
             "qwen_ready": False,
             "nomic_ready": False,
             "doc_count": 0,
@@ -395,8 +396,7 @@ def get_engine_health():
             h = runtime.health()
             health["qwen_ready"] = h.qwen_ready
             health["nomic_ready"] = h.nomic_ready
-            health["backend"] = h.backend
-            health["model_name"] = h.model_path.split("/")[-1] if h.model_path else ""
+            health["backend"] = "On-device"
 
         try:
             docs = pipeline_list_docs()

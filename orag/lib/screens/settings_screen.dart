@@ -303,9 +303,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ---- Engine ----
 
   Widget _buildEngineSection() {
-    final modelName =
-        (_health['model_name'] as String?)?.replaceAll('.gguf', '') ?? '—';
-    final backend = _health['backend'] as String? ?? '—';
+    final backend = _health['backend'] as String? ?? 'On-device';
     final qwenReady = _health['qwen_ready'] == true;
     final nomicReady = _health['nomic_ready'] == true;
     final modelLoaded = _health['model_loaded'] == true;
@@ -316,15 +314,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _buildSectionHeader(
             'AI Engine', Icons.memory_rounded, AppColors.primary),
         _buildCard(children: [
-          _buildRow('Model', modelLoaded ? modelName : 'Not loaded',
-              valueColor: modelLoaded ? null : AppColors.textDim),
+          _buildRow('Status', modelLoaded ? 'Loaded' : 'Not loaded',
+              valueColor: modelLoaded ? AppColors.success : AppColors.textDim),
           _divider(),
           _buildRow('Backend', backend),
           _divider(),
-          _buildRow('Chat Server (Qwen)', '',
+          _buildRow('Chat Engine', '',
               trailing: _statusDot(qwenReady)),
           _divider(),
-          _buildRow('Embedding Server (Nomic)', '',
+          _buildRow('Embedding Engine', '',
               trailing: _statusDot(nomicReady)),
         ]),
       ],
@@ -433,7 +431,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _divider(),
           _buildRow('Version', '1.0.0'),
           _divider(),
-          _buildRow('Engine', 'Qwen 2.5 + Nomic Embed'),
+          _buildRow('Engine', 'LLM + Embeddings'),
           _divider(),
           _buildRow('Platform', 'On-device (offline)'),
         ]),
