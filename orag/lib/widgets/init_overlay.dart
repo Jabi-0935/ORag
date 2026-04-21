@@ -151,36 +151,45 @@ class _AnimatedLogoState extends State<_AnimatedLogo>
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, child) {
+        final glowColor = isError
+            ? AppColors.error
+            : isReady
+                ? AppColors.success
+                : AppColors.primary;
         return Container(
-          width: 80,
-          height: 80,
+          width: 100,
+          height: 100,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            gradient: isError
-                ? null
-                : RadialGradient(
-                    colors: [
-                      (isReady ? AppColors.success : AppColors.primary)
-                          .withValues(alpha: 0.2 + 0.1 * _controller.value),
-                      (isReady ? AppColors.success : AppColors.primary)
-                          .withValues(alpha: 0.05),
-                    ],
-                  ),
-            color: isError ? AppColors.error.withValues(alpha: 0.15) : null,
+            boxShadow: [
+              BoxShadow(
+                color: glowColor
+                    .withValues(alpha: 0.15 + 0.15 * _controller.value),
+                blurRadius: 40,
+                spreadRadius: 10,
+              ),
+            ],
           ),
-          child: Icon(
-            isError
-                ? Icons.error_outline_rounded
-                : isReady
-                    ? Icons.check_circle_outline_rounded
-                    : Icons.auto_awesome_rounded,
-            size: 40,
-            color: isError
-                ? AppColors.error
-                : isReady
-                    ? AppColors.success
-                    : AppColors.primary,
-          ),
+          child: isError
+              ? Icon(
+                  Icons.error_outline_rounded,
+                  size: 48,
+                  color: AppColors.error,
+                )
+              : isReady
+                  ? Icon(
+                      Icons.check_circle_outline_rounded,
+                      size: 48,
+                      color: AppColors.success,
+                    )
+                  : ClipOval(
+                      child: Image.asset(
+                        'assets/logo.png',
+                        width: 100,
+                        height: 100,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
         );
       },
     );

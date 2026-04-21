@@ -332,22 +332,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       ),
       child: Row(
         children: [
-          // Logo accent
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [AppColors.primary, AppColors.secondary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(
-              Icons.auto_awesome_rounded,
-              color: Colors.white,
-              size: 20,
+          // Logo
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.asset(
+              'assets/logo.png',
+              width: 36,
+              height: 36,
+              fit: BoxFit.cover,
             ),
           ),
           const SizedBox(width: 12),
@@ -477,20 +469,28 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Logo in empty state
           Container(
-            width: 72,
-            height: 72,
+            width: 80,
+            height: 80,
             decoration: BoxDecoration(
-              color: (_ragMode ? AppColors.secondary : AppColors.primary)
-                  .withValues(alpha: 0.1),
               shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: (_ragMode ? AppColors.secondary : AppColors.primary)
+                      .withValues(alpha: 0.15),
+                  blurRadius: 30,
+                  spreadRadius: 5,
+                ),
+              ],
             ),
-            child: Icon(
-              _ragMode
-                  ? Icons.description_outlined
-                  : Icons.chat_bubble_outline_rounded,
-              size: 32,
-              color: _ragMode ? AppColors.secondary : AppColors.primary,
+            child: ClipOval(
+              child: Image.asset(
+                'assets/logo.png',
+                width: 80,
+                height: 80,
+                fit: BoxFit.cover,
+              ),
             ),
           ),
           const SizedBox(height: 20),

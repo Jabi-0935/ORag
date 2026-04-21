@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'theme/app_theme.dart';
-import 'screens/chat_screen.dart';
+import 'screens/splash_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -10,11 +10,11 @@ void main() {
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
-  // Dark status bar to match theme
+  // Dark status bar to match splash / theme
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
-    systemNavigationBarColor: AppColors.surface,
+    systemNavigationBarColor: Color(0xFF040123),
     systemNavigationBarIconBrightness: Brightness.light,
   ));
   runApp(const OragApp());
@@ -29,7 +29,7 @@ class OragApp extends StatelessWidget {
       title: 'O-RAG',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.dark,
-      home: const ChatScreen(),
+      home: const SplashScreen(),
     );
   }
 }
