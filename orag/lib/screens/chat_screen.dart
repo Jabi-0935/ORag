@@ -287,29 +287,33 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     return Scaffold(
       key: _scaffoldKey,
-      endDrawer: DocumentDrawer(platform: _platform),
+      backgroundColor: const Color(0xFF040123),
+      endDrawer: _initDone ? DocumentDrawer(platform: _platform) : null,
       body: Stack(
         children: [
-          // Main chat UI
-          Column(
-            children: [
-              _buildAppBar(),
-              Expanded(child: _buildMessageList()),
-              ChatInputBar(
-                controller: _controller,
-                enabled: _initDone,
-                isGenerating: _isGenerating,
-                onSend: _sendMessage,
-                onStop: _stopGeneration,
-              ),
-            ],
-          ),
+          // Main chat UI — only built after init completes
+          if (_initDone)
+            Column(
+              children: [
+                _buildAppBar(),
+                Expanded(child: _buildMessageList()),
+                ChatInputBar(
+                  controller: _controller,
+                  enabled: _initDone,
+                  isGenerating: _isGenerating,
+                  onSend: _sendMessage,
+                  onStop: _stopGeneration,
+                ),
+              ],
+            ),
 
-          // Init overlay (shown on top until ready)
+          // Init overlay — covers the entire screen
           if (!_initDone)
-            InitOverlay(
-              status: _initStatus,
-              onRetry: _startInit,
+            Positioned.fill(
+              child: InitOverlay(
+                status: _initStatus,
+                onRetry: _startInit,
+              ),
             ),
         ],
       ),
@@ -340,6 +344,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               width: 36,
               height: 36,
               fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => const SizedBox(
+                width: 36, height: 36,
+              ),
             ),
           ),
           const SizedBox(width: 12),
@@ -490,6 +497,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 width: 80,
                 height: 80,
                 fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const SizedBox(
+                  width: 80, height: 80,
+                ),
               ),
             ),
           ),

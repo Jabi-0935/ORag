@@ -1,11 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import 'theme/app_theme.dart';
 import 'screens/splash_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Use bundled fonts only – no network fetching in release mode
+  GoogleFonts.config.allowRuntimeFetching = false;
+
+  // Replace Flutter's red error screen with a dark one that matches the app
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return Container(color: const Color(0xFF040123));
+  };
+
   // Lock to portrait for consistent mobile UX
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
