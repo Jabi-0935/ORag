@@ -323,9 +323,9 @@ def download_model(
             and os.path.isfile(dest)
             and os.path.getsize(dest) >= max(1, int(min_bytes))
         ):
-            print(f"[DOWNLOAD] Already downloaded.")
+            print(f"[DOWNLOAD] Already downloaded: {filename}")
             if on_progress:
-                on_progress(1.0, "Already downloaded.")
+                on_progress(1.0, f"Ready: {filename}")
             if on_done:
                 on_done(True, dest)
             return
@@ -412,7 +412,7 @@ def auto_download_default(
         if _is_model_file_ready(meta) and not manifest_changed and not force_every_run:
             # Already cached, emit 100% for this model and move on
             if on_progress:
-                on_progress(1.0, f"{display_label} ready.")
+                on_progress(1.0, f"{display_label} is ready.")
             _ensure_model(index + 1)
             return
 

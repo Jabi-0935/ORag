@@ -23,6 +23,8 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final PlatformService _platform = PlatformService();
   final TextEditingController _controller = TextEditingController();
+  InitStatus _initStatus = const InitStatus();
+  bool _isInitializing = false;
   final ScrollController _scrollController = ScrollController();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
@@ -32,7 +34,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   StreamSubscription<String>? _chatSub;
 
   // Init state
-  InitStatus _initStatus = const InitStatus(state: InitState.idle);
   bool _initDone = false;
 
   @override
@@ -52,6 +53,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   // ---- Init flow ----
 
   Future<void> _startInit() async {
+    if (_isInitializing) return;
+    _isInitializing = true;
+
     setState(() {
       _initStatus = const InitStatus(
         state: InitState.idle,
@@ -61,34 +65,38 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     });
 
     try {
-      final dir = await getExternalStorageDirectory();
-      final modelPath = '${dir!.path}/models';
+      final modelPath = (await getExternalStorageDirectory())?.path;
 
-      _platform.initPython(modelPath).listen(
+      _platform.initPython(modelPath ?? '').listen(
         (status) {
-          if (!mounted) return;
-          setState(() {
-            _initStatus = status;
-            if (status.isReady) _initDone = true;
-          });
-        },
-        onError: (e) {
-          if (!mounted) return;
-          setState(() {
-            _initStatus = InitStatus(
-              state: InitState.error,
-              progress: 1.0,
-              message: 'Init failed: $e',
-            );
-          });
+          if (mounted) {
+            setState(() {
+              _initStatus = status;
+              if (status.isReady) _initDone = true;
+            });
+          }
         },
         onDone: () {
+          _isInitializing = false;
           if (!_initDone && mounted) {
             _pollStatus();
           }
         },
+        onError: (e) {
+          _isInitializing = false;
+          if (mounted) {
+            setState(() {
+              _initStatus = InitStatus(
+                state: InitState.error,
+                progress: 1.0,
+                message: 'Initialization failed: $e',
+              );
+            });
+          }
+        },
       );
     } catch (e) {
+      _isInitializing = false;
       if (mounted) {
         setState(() {
           _initStatus = InitStatus(

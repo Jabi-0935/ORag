@@ -256,22 +256,38 @@ def _wait_for_server(port: int, timeout: int = 120,
     while time.time() < deadline:
         proc = _LLAMASERVER_PROC if port == _LLAMASERVER_PORT else _NOMIC_PROC
         if proc is not None and proc.poll() is not None:
-            print(f"[llama-server port={port}] process exited early (code={proc.returncode})")
+            # Process died. Read tail of log if available.
+            tail = ""
+            priv = _android_private_dir()
+            if priv:
+                try:
+                    log_fn = "llama_server.log" if port == _LLAMASERVER_PORT else "nomic_server.log"
+                    log_path = os.path.join(priv, log_fn)
+                    if os.path.isfile(log_path):
+                        with open(log_path, "rb") as lf:
+                            lf.seek(max(0, os.path.getsize(log_path) - 500))
+                            tail = lf.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+            print(f"[llama-server port={port}] process exited early (code={proc.returncode}). Tail: {tail}")
             return False
+
         try:
-            with urllib.request.urlopen(url, timeout=2) as r:
+            with urllib.request.urlopen(url, timeout=1.5) as r:
                 if r.status == 200:
                     if on_tick:
                         on_tick(1.0, "AI engine ready!")
                     return True
         except Exception:
             pass
+
         elapsed = time.time() - started
         if on_tick and elapsed - last_tick >= 1.0:
             last_tick = elapsed
             pct = min(elapsed / timeout, 0.95)
-            on_tick(pct, f"Loading model into memory\u2026 {int(elapsed)}s")
-        time.sleep(0.5)
+            on_tick(pct, f"Starting AI engine\u2026 {int(elapsed)}s")
+        time.sleep(1.0)
+    return False
     return False
 
 
@@ -324,8 +340,10 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
             "--port", str(_LLAMASERVER_PORT),      # FIXED
             "--host", "127.0.0.1",
 
-            # performance flags (important)
+            # Memory-efficient flags for 4GB Android devices
+            "--n-gpu-layers", "0",
             "--flash-attn", "on",
+            "--no-mmap",              # Forces full load into RAM, avoids random disk access jitter
             "--cont-batching",
             "--cache-type-k", "q8_0",
             "--cache-type-v", "q8_0",

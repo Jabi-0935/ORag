@@ -23,6 +23,20 @@ MAX_TURNS = 5
 _progress_callback = None
 _progress_lock = threading.Lock()
 
+def _log_init(msg):
+    """Write diagnostic info to a log file in the app private directory."""
+    try:
+        from llm import _android_private_dir
+        priv = _android_private_dir()
+        if not priv:
+            return
+        log_path = os.path.join(priv, "api_init.log")
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] {msg}\n")
+    except Exception:
+        pass
+
 
 def _set_progress_callback(cb):
     global _progress_callback
@@ -111,8 +125,9 @@ def init_with_progress(model_path, progress_callback):
             return
 
         try:
+            _log_init(f"Starting init_with_progress. model_path={model_path}")
             # Step 0: Setup
-            _emit_progress("downloading", 0.0, "Preparing…")
+            _emit_progress("downloading", 0.0, "Preparing AI engine…")
 
             if model_path:
                 set_model_dir(model_path)
@@ -139,8 +154,11 @@ def init_with_progress(model_path, progress_callback):
                 on_done=on_download_done,
             )
 
-            # Wait for download to complete
-            download_done.wait(timeout=600)
+            # Wait for download to complete (sequential)
+            _log_init("Waiting for auto_download_default...")
+            # Note: auto_download_default is synchronous in our current implementation.
+            # No need to wait on Event unless it becomes async.
+            _log_init("auto_download_default finished.")
 
             if download_error[0]:
                 _emit_progress("error", 1.0, download_error[0])
@@ -150,12 +168,14 @@ def init_with_progress(model_path, progress_callback):
             qwen_path = model_dest_path(QWEN_MODEL["filename"])
 
             if not runtime.is_loaded():
+                _log_init(f"Loading Qwen model from: {qwen_path}")
                 _emit_progress("loading", 0.05, "Starting AI engine…")
 
                 def on_load_progress(frac, text):
-                    _emit_progress("loading", frac, "Loading AI engine…")
+                    _emit_progress("loading", frac, text or "Loading AI engine…")
 
                 runtime.load(qwen_path, on_progress=on_load_progress)
+                _log_init("Qwen model loaded successfully.")
 
             # Step 3: Start embedding engine for RAG semantic search
             from downloader import NOMIC_MODEL
