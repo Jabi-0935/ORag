@@ -40,9 +40,9 @@ env:
   # ── Node.js 24 opt-in (suppresses deprecation warning for actions) ───────
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-  # Flutter channel & version – pin for reproducible builds
+  # Flutter channel – always use latest stable for reproducible-enough builds.
+  # Remove the version pin so setup never fails on a non-existent tag.
   FLUTTER_CHANNEL: stable
-  FLUTTER_VERSION: "3.32.0"   # update when you upgrade Flutter
 
   # Java version required by AGP 8.x + Chaquopy
   JAVA_VERSION: "17"
@@ -79,13 +79,16 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: gradle
 
-      - name: 🐦 Set up Flutter
+      - name: 🐦 Set up Flutter (latest stable)
         uses: subosito/flutter-action@v2
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
-          flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-          cache-key: flutter-${{ env.FLUTTER_VERSION }}-${{ runner.os }}
+          cache-key: flutter-stable-${{ runner.os }}
+
+      - name: 🩺 Flutter doctor (diagnostics)
+        run: flutter doctor -v
+        continue-on-error: true
 
       - name: 📦 Install dependencies
         run: flutter pub get
@@ -146,13 +149,12 @@ jobs:
           cache: gradle
 
       # ── 3. Flutter ──────────────────────────────────────
-      - name: 🐦 Set up Flutter
+      - name: 🐦 Set up Flutter (latest stable)
         uses: subosito/flutter-action@v2
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
-          flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-          cache-key: flutter-${{ env.FLUTTER_VERSION }}-${{ runner.os }}
+          cache-key: flutter-stable-${{ runner.os }}
 
       # ── 4. Gradle cache ─────────────────────────────────
       - name: 🗄️ Cache Gradle dependencies
@@ -286,7 +288,7 @@ jobs:
           echo "| **Commit** | \`${{ steps.meta.outputs.short_sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **App Version** | \`${{ steps.meta.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Build Date** | \`${{ steps.meta.outputs.build_date }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Flutter** | \`${{ env.FLUTTER_VERSION }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Flutter** | \`latest-stable\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Java** | \`${{ env.JAVA_VERSION }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
