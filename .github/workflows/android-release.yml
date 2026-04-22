@@ -204,6 +204,14 @@ jobs:
           EOF
           echo "key.properties written"
 
+      # ── 7.5 Python for Chaquopy ─────────────────────────
+      # chaquopy.gradle no longer hard-codes a local Windows path.
+      # We provide a known Python on the CI runner via CHAQUOPY_PYTHON.
+      - name: 🐍 Set up Python (for Chaquopy)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       # ── 8. Build APK ────────────────────────────────────
       - name: 🏗️ Build release APK
         run: |
@@ -215,6 +223,8 @@ jobs:
         env:
           # Pass Gradle JVM args for Chaquopy + large dependency sets
           GRADLE_OPTS: "-Xmx8g -XX:MaxMetaspaceSize=4g"
+          # Point Chaquopy to the Python we just set up
+          CHAQUOPY_PYTHON: python3
 
       # ── 9. Build AAB ────────────────────────────────────
       - name: 📦 Build release AAB (Play Store bundle)
@@ -225,6 +235,7 @@ jobs:
             --split-debug-info=build/debug-info
         env:
           GRADLE_OPTS: "-Xmx8g -XX:MaxMetaspaceSize=4g"
+          CHAQUOPY_PYTHON: python3
 
       # ── 10. Collect artifacts ────────────────────────────
       - name: 📋 List build outputs
