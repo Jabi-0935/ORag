@@ -48,6 +48,18 @@ def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
+
+            CREATE TABLE IF NOT EXISTS chunk_images (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_id   INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+                doc_id     INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                image_path TEXT NOT NULL,
+                page_num   INTEGER DEFAULT 0,
+                width      INTEGER DEFAULT 0,
+                height     INTEGER DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chunk_images_chunk ON chunk_images(chunk_id);
             """
         )
 
@@ -96,10 +108,11 @@ def delete_document(doc_id: int) -> None:
 
 # ---------- chunk helpers ----------
 
-def insert_chunks(doc_id: int, chunks: List[dict]) -> None:
+def insert_chunks(doc_id: int, chunks: List[dict]) -> List[int]:
     """
     chunks: list of dicts with keys:
         chunk_idx, text, tokens (list[str]), tfidf_vec (dict)
+    Returns list of inserted chunk IDs (for image association).
     """
     rows = [
         (
@@ -111,12 +124,16 @@ def insert_chunks(doc_id: int, chunks: List[dict]) -> None:
         )
         for c in chunks
     ]
+    chunk_ids = []
     with get_conn() as conn:
-        conn.executemany(
-            "INSERT INTO chunks(doc_id, chunk_idx, text, tokens, tfidf_vec) "
-            "VALUES (?,?,?,?,?)",
-            rows,
-        )
+        for row in rows:
+            cur = conn.execute(
+                "INSERT INTO chunks(doc_id, chunk_idx, text, tokens, tfidf_vec) "
+                "VALUES (?,?,?,?,?)",
+                row,
+            )
+            chunk_ids.append(cur.lastrowid)
+    return chunk_ids
 
 
 def load_all_chunks() -> List[dict]:
@@ -148,3 +165,52 @@ def get_chunk_texts_by_ids(ids: List[int]) -> List[str]:
         ).fetchall()
     id_to_text = {r[0]: r[1] for r in rows}
     return [id_to_text[i] for i in ids if i in id_to_text]
+
+
+# ---------- chunk image helpers ----------
+
+def insert_chunk_images(chunk_id: int, doc_id: int, images: List[dict]) -> None:
+    """
+    Store image metadata for a chunk.
+    images: list of dicts with keys: path, page, width, height
+    """
+    rows = [
+        (
+            chunk_id,
+            doc_id,
+            img["path"],
+            img.get("page", 0),
+            img.get("width", 0),
+            img.get("height", 0),
+        )
+        for img in images
+    ]
+    with get_conn() as conn:
+        conn.executemany(
+            "INSERT INTO chunk_images(chunk_id, doc_id, image_path, page_num, width, height) "
+            "VALUES (?,?,?,?,?,?)",
+            rows,
+        )
+
+
+def get_images_for_chunks(chunk_ids: List[int]) -> List[dict]:
+    """Return all images associated with the given chunk IDs."""
+    if not chunk_ids:
+        return []
+    placeholders = ",".join("?" * len(chunk_ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT chunk_id, image_path, page_num, width, height "
+            f"FROM chunk_images WHERE chunk_id IN ({placeholders})",
+            chunk_ids,
+        ).fetchall()
+    return [
+        {
+            "chunk_id": r[0],
+            "image_path": r[1],
+            "page_num": r[2],
+            "width": r[3],
+            "height": r[4],
+        }
+        for r in rows
+    ]

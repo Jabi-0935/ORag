@@ -12,7 +12,7 @@ from typing import Callable, Optional
 from config import QWEN_SERVER_PORT
 from runtime.bootstrap import BootstrapCoordinator
 from runtime.model_runtime import LlamaModelRuntime, ModelRuntime
-from chunker import process_document
+from chunker import process_document, extract_images_from_pdf
 from downloader import NOMIC_MODEL, QWEN_MODEL, auto_download_default, model_dest_path, auto_download_default_sync, set_model_dir
 from llm import build_direct_prompt, build_rag_prompt
 from retriever import HybridRetriever
@@ -21,7 +21,9 @@ from storage import (
     get_conn,
     init_db,
     insert_chunks,
+    insert_chunk_images,
     insert_document,
+    get_images_for_chunks,
     list_documents as storage_list_documents,
     update_doc_chunk_count,
 )
@@ -88,7 +90,7 @@ def init(model_path: Optional[str] = None) -> None:
     auto_download_default_sync()
 
     # Step 2: Load Qwen model into runtime
-    qwen_path = model_dest_path("qwen2.5-1.5b-instruct-compressed.gguf")
+    qwen_path = model_dest_path(QWEN_MODEL["filename"])
 
     print("[INIT] Loading model via runtime...")
 
@@ -150,6 +152,7 @@ def ingest_document(
     """
     Ingest a .txt or .pdf file synchronously.
     Starts Nomic server lazily on first call.
+    Extracts images from PDFs and associates them with chunks.
 
     The document row is only updated with the chunk count AFTER all
     chunks are fully processed and inserted, so the UI never shows
@@ -200,15 +203,32 @@ def ingest_document(
 
         # Step 3: Insert document + chunks atomically
         doc_id = insert_document(name, resolved)
-        insert_chunks(doc_id, chunks)
+        chunk_ids = insert_chunks(doc_id, chunks)
         update_doc_chunk_count(doc_id, len(chunks))
         print(f"[INGEST] Saved {len(chunks)} chunks for doc_id={doc_id}")
 
-        # Step 4: Reload retriever so new chunks are queryable
+        # Step 4: Extract images from PDFs and associate with chunks
+        images = []
+        is_pdf = name.lower().endswith(".pdf")
+        if is_pdf:
+            from llm import _android_private_dir
+            priv = _android_private_dir() or os.path.dirname(resolved)
+            img_dir = os.path.join(priv, "doc_images", str(doc_id))
+            images = extract_images_from_pdf(resolved, img_dir)
+            if images:
+                print(f"[INGEST] Extracted {len(images)} images")
+                # Associate images with the chunk nearest their page
+                _associate_images_with_chunks(
+                    images, chunk_ids, len(raw_chunks), doc_id
+                )
+
+        # Step 5: Reload retriever so new chunks are queryable
         retriever.reload()
         print(f"[INGEST] Retriever reloaded")
 
-        result = (True, f"Ingested '{name}' — {len(chunks)} chunks")
+        img_count = len(images)
+        suffix = f", {img_count} images" if img_count else ""
+        result = (True, f"Ingested '{name}' — {len(chunks)} chunks{suffix}")
     except Exception as exc:
         import traceback
         traceback.print_exc()
@@ -217,6 +237,34 @@ def ingest_document(
     if on_done:
         on_done(*result)
     return result
+
+
+def _associate_images_with_chunks(
+    images: list[dict],
+    chunk_ids: list[int],
+    total_chunks: int,
+    doc_id: int,
+) -> None:
+    """
+    Map extracted images to their nearest chunk by page number.
+    Simple heuristic: divide pages evenly across chunks.
+    """
+    if not images or not chunk_ids:
+        return
+    # We need total pages to map page -> chunk_idx
+    max_page = max(img["page"] for img in images)
+    for img in images:
+        # Map page number to chunk index (proportionally)
+        chunk_idx = min(
+            int((img["page"] - 1) / max(max_page, 1) * total_chunks),
+            total_chunks - 1,
+        )
+        if chunk_idx < len(chunk_ids):
+            insert_chunk_images(
+                chunk_id=chunk_ids[chunk_idx],
+                doc_id=doc_id,
+                images=[img],
+            )
 
 
 def load_model(
@@ -325,9 +373,9 @@ def ask(
 ) -> tuple[bool, str, list]:
     """
     Run a RAG query synchronously.
-    Retrieves top-2 chunks to fit mobile context budget.
+    Retrieves top-4 chunks for better context coverage.
     Returns (success, answer, sources) where sources is a list of dicts:
-      [{"doc_name": "...", "chunk_text": "...", "score": 0.85}, ...]
+      [{"doc_name": "...", "chunk_text": "...", "score": 0.85, "images": [...]}, ...]
     """
     sources = []
     try:
@@ -337,7 +385,7 @@ def ask(
             result = (False, "No LLM model loaded. Please load a GGUF model first.", [])
         else:
             print(f"[RAG] Query: {question[:100]}")
-            results = retriever.query(question, top_k=2)
+            results = retriever.query(question, top_k=4)
             if not results:
                 print("[RAG] No relevant context found")
                 result = (False, "No relevant context found.", [])
@@ -358,6 +406,8 @@ def ask(
                 except Exception:
                     pass
 
+                # Collect chunk IDs for image lookup
+                chunk_ids_for_images = []
                 seen_doc_names = set()
                 for text, score, doc_id in results:
                     doc_name = doc_name_cache.get(doc_id, f"Document #{doc_id}")
@@ -368,7 +418,25 @@ def ask(
                         "doc_name": doc_name,
                         "chunk_text": text[:200],  # Preview only
                         "score": round(score, 3),
+                        "images": [],
                     })
+
+                # Fetch associated images for retrieved chunks
+                try:
+                    all_chunk_ids = retriever.get_chunk_ids_for_results(results)
+                    if all_chunk_ids:
+                        chunk_images = get_images_for_chunks(all_chunk_ids)
+                        # Attach images to the first matching source
+                        for img in chunk_images:
+                            if sources:
+                                sources[0]["images"].append({
+                                    "path": img["image_path"],
+                                    "page": img.get("page_num", 0),
+                                    "width": img.get("width", 0),
+                                    "height": img.get("height", 0),
+                                })
+                except Exception as img_err:
+                    print(f"[RAG] Image lookup skipped: {img_err}")
 
                 # Debug stream wrapper
                 def _debug_stream(token: str):

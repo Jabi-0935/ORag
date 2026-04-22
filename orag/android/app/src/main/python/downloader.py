@@ -33,22 +33,22 @@ from config import (
 QWEN_MODEL: dict = {
     "id": "qwen",
     "display_label": "Chat Model",
-    "repo_id": "cracker0935/Compressed_RAG_Models",
-    "filename": "qwen2.5-1.5b-instruct-compressed.gguf",
+    "repo_id": "unsloth/Qwen3.5-2B-GGUF",
+    "filename": "Qwen3.5-2B-Q4_K_M.gguf",
     "revision": "main",
-    "min_bytes": 500 * 1024 * 1024,
-    "url": "https://huggingface.co/cracker0935/Compressed_RAG_Models/resolve/main/qwen2.5-1.5b-instruct-compressed.gguf",
+    "min_bytes": 1000 * 1024 * 1024,
+    "url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
 }
 
 
 NOMIC_MODEL: dict = {
     "id": "nomic",
     "display_label": "Embedding Model",
-    "repo_id": "cracker0935/Compressed_RAG_Models",
-    "filename": "nomic-embed-text-v1.5-compressed.gguf",
+    "repo_id": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+    "filename": "nomic-embed-text-v1.5.Q8_0.gguf",
     "revision": "main",
-    "min_bytes": 30 * 1024 * 1024,
-    "url": "https://huggingface.co/cracker0935/Compressed_RAG_Models/resolve/main/nomic-embed-text-v1.5-compressed.gguf",
+    "min_bytes": 100 * 1024 * 1024,
+    "url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf",
 }
 
 MOBILE_MODELS: list[dict] = [QWEN_MODEL, NOMIC_MODEL]

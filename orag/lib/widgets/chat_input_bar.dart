@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../theme/app_theme.dart';
 
-/// Chat text input bar with three visual states:
+/// Chat text input bar with voice input support.
 ///  - Disabled (during init): grayed out, "AI is loading…"
-///  - Ready: active input with send button
+///  - Ready: active input with mic + send buttons
 ///  - Generating: disabled, shows animated stop button
-class ChatInputBar extends StatelessWidget {
+class ChatInputBar extends StatefulWidget {
   final TextEditingController controller;
   final bool enabled;
   final bool isGenerating;
@@ -20,6 +21,70 @@ class ChatInputBar extends StatelessWidget {
     required this.onSend,
     required this.onStop,
   });
+
+  @override
+  State<ChatInputBar> createState() => _ChatInputBarState();
+}
+
+class _ChatInputBarState extends State<ChatInputBar> {
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _isListening = false;
+  bool _speechAvailable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initSpeech();
+  }
+
+  Future<void> _initSpeech() async {
+    try {
+      _speechAvailable = await _speech.initialize(
+        onStatus: (status) {
+          if (status == 'done' || status == 'notListening') {
+            if (mounted) setState(() => _isListening = false);
+          }
+        },
+        onError: (error) {
+          if (mounted) setState(() => _isListening = false);
+        },
+      );
+    } catch (e) {
+      _speechAvailable = false;
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _toggleListening() async {
+    if (_isListening) {
+      await _speech.stop();
+      setState(() => _isListening = false);
+    } else {
+      if (!_speechAvailable) {
+        await _initSpeech();
+        if (!_speechAvailable) return;
+      }
+      setState(() => _isListening = true);
+      await _speech.listen(
+        onResult: (result) {
+          widget.controller.text = result.recognizedWords;
+          widget.controller.selection = TextSelection.fromPosition(
+            TextPosition(offset: widget.controller.text.length),
+          );
+        },
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 3),
+        partialResults: true,
+        localeId: 'en_US',
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _speech.stop();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,13 +103,20 @@ class ChatInputBar extends StatelessWidget {
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
-                  color: AppColors.inputFill,
+                  color: _isListening
+                      ? AppColors.primary.withValues(alpha: 0.05)
+                      : AppColors.inputFill,
                   borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: AppColors.inputBorder, width: 1),
+                  border: Border.all(
+                    color: _isListening
+                        ? AppColors.primary.withValues(alpha: 0.4)
+                        : AppColors.inputBorder,
+                    width: 1,
+                  ),
                 ),
                 child: TextField(
-                  controller: controller,
-                  enabled: enabled && !isGenerating,
+                  controller: widget.controller,
+                  enabled: widget.enabled && !widget.isGenerating,
                   maxLines: 4,
                   minLines: 1,
                   style: const TextStyle(
@@ -64,11 +136,20 @@ class ChatInputBar extends StatelessWidget {
                     ),
                   ),
                   textInputAction: TextInputAction.send,
-                  onSubmitted: enabled && !isGenerating ? (_) => onSend() : null,
+                  onSubmitted:
+                      widget.enabled && !widget.isGenerating ? (_) => widget.onSend() : null,
                 ),
               ),
             ),
             const SizedBox(width: 8),
+            // Microphone button
+            if (!widget.isGenerating && widget.enabled)
+              _MicButton(
+                isListening: _isListening,
+                onTap: _toggleListening,
+              ),
+            if (!widget.isGenerating && widget.enabled)
+              const SizedBox(width: 4),
             _actionButton(),
           ],
         ),
@@ -77,17 +158,47 @@ class ChatInputBar extends StatelessWidget {
   }
 
   String get _hintText {
-    if (!enabled) return 'AI is loading…';
-    if (isGenerating) return 'Generating…';
+    if (!widget.enabled) return 'AI is loading…';
+    if (widget.isGenerating) return 'Generating…';
+    if (_isListening) return 'Listening…';
     return 'Ask me anything…';
   }
 
   Widget _actionButton() {
-    if (isGenerating) {
-      return _StopButton(onTap: onStop);
+    if (widget.isGenerating) {
+      return _StopButton(onTap: widget.onStop);
     }
     return _SendButton(
-      onTap: enabled ? onSend : null,
+      onTap: widget.enabled ? widget.onSend : null,
+    );
+  }
+}
+
+class _MicButton extends StatelessWidget {
+  final bool isListening;
+  final VoidCallback onTap;
+  const _MicButton({required this.isListening, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: isListening
+              ? AppColors.error.withValues(alpha: 0.15)
+              : AppColors.secondary.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(19),
+        ),
+        child: Icon(
+          isListening ? Icons.mic_off_rounded : Icons.mic_rounded,
+          color: isListening ? AppColors.error : AppColors.secondary,
+          size: 20,
+        ),
+      ),
     );
   }
 }

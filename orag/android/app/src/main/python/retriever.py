@@ -115,13 +115,13 @@ class HybridRetriever:
         try:
             from llm import get_embedding
             computed = {}
-            # Cap at 30 chunks â€” embed only the first 30 for speed.
+            # Cap at 50 chunks â€” embed more for better coverage with Q8_0 model.
             # For RAG we retrieve top-2; 30 embedded chunks is more than enough.
-            chunks_to_embed = self._chunks[:30]
+            chunks_to_embed = self._chunks[:50]
             for c in chunks_to_embed:
                 cid  = c["id"]
-                # Cap at 300 chars â‰ˆ 100 tokens, matching Nomic ctx=128
-                text = c["text"][:300]
+                # Cap at 512 chars â‰ˆ 150 tokens, matching Nomic ctx=512
+                text = c["text"][:512]
                 emb = get_embedding(text)
                 if emb is None:
                     print("[retriever] embedding endpoint unavailable â€” "
@@ -233,9 +233,9 @@ class HybridRetriever:
 
         if sem is not None:
             sem_n = _normalise_scores(sem)
-            # Semantic-weighted blend: 30 BM25 + 20 TF-IDF + 50 semantic
+            # Semantic-weighted blend: 25 BM25 + 15 TF-IDF + 60 semantic
             combined = [
-                (i, 0.30 * b + 0.20 * c + 0.50 * s)
+                (i, 0.25 * b + 0.15 * c + 0.60 * s)
                 for i, (b, c, s) in enumerate(zip(bm25_n, cos_n, sem_n))
             ]
         else:
@@ -260,3 +260,15 @@ class HybridRetriever:
                 break
         
         return top
+
+    def get_chunk_ids_for_results(
+        self, results: list[tuple[str, float, int]]
+    ) -> list[int]:
+        """Map RAG query results back to chunk IDs for image lookup."""
+        chunk_ids = []
+        for text, score, doc_id in results:
+            for c in self._chunks:
+                if c["text"].strip() == text.strip() and c["doc_id"] == doc_id:
+                    chunk_ids.append(c["id"])
+                    break
+        return chunk_ids

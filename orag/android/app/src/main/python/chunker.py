@@ -28,8 +28,8 @@ except ImportError:
 #  Constants                                                           #
 # ------------------------------------------------------------------ #
 
-CHUNK_SIZE   = 80    # tokens (approx words) per chunk — must fit in Nomic ctx=128
-CHUNK_OVERLAP = 15   # overlapping tokens between consecutive chunks
+CHUNK_SIZE   = 200   # tokens (approx words) per chunk — larger for better context
+CHUNK_OVERLAP = 40   # overlapping tokens between consecutive chunks
 
 # Minimal English stopwords (keeps index small)
 _STOP = frozenset(
@@ -162,17 +162,26 @@ def _split_sentences(text: str) -> List[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def chunk_text(text: str) -> List[str]:
+def chunk_text(text: str, preamble_chars: int = 200) -> List[str]:
     """
     Split text into overlapping chunks of ~CHUNK_SIZE words.
+    Prepends the document preamble (first preamble_chars characters) to every
+    chunk after the first, so metadata like title/author is always retrievable.
     Returns list of raw (un-tokenised) chunk strings.
     """
+    preamble = text[:preamble_chars].strip()
     words = text.split()
     chunks: List[str] = []
     start = 0
     while start < len(words):
         end = min(start + CHUNK_SIZE, len(words))
-        chunk = " ".join(words[start:end])
+        chunk_body = " ".join(words[start:end])
+        # Prepend preamble to every chunk after the first so document
+        # metadata (title, author, etc.) is always findable by retrieval.
+        if start > 0 and preamble:
+            chunk = f"[Document Info: {preamble}]\n\n{chunk_body}"
+        else:
+            chunk = chunk_body
         chunks.append(chunk)
         if end == len(words):
             break
@@ -245,3 +254,52 @@ def process_document(path: str) -> List[dict]:
             }
         )
     return result
+
+
+# ------------------------------------------------------------------ #
+#  Image extraction                                                    #
+# ------------------------------------------------------------------ #
+
+def extract_images_from_pdf(path: str, output_dir: str) -> List[dict]:
+    """
+    Extract embedded images from a PDF file.
+
+    Returns list of dicts:
+        {page, path, width, height}
+    """
+    if not PDF_SUPPORT:
+        return []
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+    images: List[dict] = []
+
+    if _PDF_BACKEND == "pymupdf":
+        doc = fitz.open(path)
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            for img_idx, img in enumerate(page.get_images(full=True)):
+                xref = img[0]
+                try:
+                    base_image = doc.extract_image(xref)
+                    img_bytes = base_image["image"]
+                    img_ext = base_image.get("ext", "png")
+                    w = base_image.get("width", 0)
+                    h = base_image.get("height", 0)
+                    # Skip tiny images (icons, decorations)
+                    if w < 50 or h < 50:
+                        continue
+                    fname = f"p{page_num + 1}_img{img_idx + 1}.{img_ext}"
+                    img_path = os.path.join(output_dir, fname)
+                    with open(img_path, "wb") as f:
+                        f.write(img_bytes)
+                    images.append({
+                        "page": page_num + 1,
+                        "path": img_path,
+                        "width": w,
+                        "height": h,
+                    })
+                except Exception as e:
+                    print(f"[CHUNKER] Image extraction error page {page_num+1}: {e}")
+        doc.close()
+    # pypdf does not support robust image extraction — skip
+    return images

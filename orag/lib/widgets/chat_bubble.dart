@@ -1,18 +1,54 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import '../models/chat_message.dart';
 import '../theme/app_theme.dart';
 
 /// A styled chat bubble for user or AI messages.
 /// AI messages render markdown (bold, code, lists, headings).
-class ChatBubble extends StatelessWidget {
+/// AI messages include a speaker button for text-to-speech.
+class ChatBubble extends StatefulWidget {
   final ChatMessage message;
 
   const ChatBubble({super.key, required this.message});
 
   @override
+  State<ChatBubble> createState() => _ChatBubbleState();
+}
+
+class _ChatBubbleState extends State<ChatBubble> {
+  static final FlutterTts _tts = FlutterTts();
+  bool _isSpeaking = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _tts.setCompletionHandler(() {
+      if (mounted) setState(() => _isSpeaking = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    if (_isSpeaking) _tts.stop();
+    super.dispose();
+  }
+
+  Future<void> _toggleTts() async {
+    if (_isSpeaking) {
+      await _tts.stop();
+      setState(() => _isSpeaking = false);
+    } else {
+      await _tts.setLanguage('en-US');
+      await _tts.setSpeechRate(0.45);
+      await _tts.speak(widget.message.text);
+      setState(() => _isSpeaking = true);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final isUser = message.isUser;
+    final isUser = widget.message.isUser;
 
     return Padding(
       padding: EdgeInsets.only(
@@ -28,7 +64,44 @@ class ChatBubble extends StatelessWidget {
         children: [
           if (!isUser) _avatar(isUser),
           if (!isUser) const SizedBox(width: 8),
-          Flexible(child: _bubble(isUser)),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _bubble(isUser),
+                // TTS speaker button for assistant messages
+                if (!isUser && widget.message.text.isNotEmpty && !widget.message.isStreaming)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4, left: 4),
+                    child: GestureDetector(
+                      onTap: _toggleTts,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _isSpeaking ? Icons.stop_circle_rounded : Icons.volume_up_rounded,
+                            size: 16,
+                            color: _isSpeaking
+                                ? AppColors.error
+                                : AppColors.textDim.withValues(alpha: 0.6),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _isSpeaking ? 'Stop' : 'Listen',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: _isSpeaking
+                                  ? AppColors.error
+                                  : AppColors.textDim.withValues(alpha: 0.6),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           if (isUser) const SizedBox(width: 8),
           if (isUser) _avatar(isUser),
         ],
@@ -80,7 +153,7 @@ class ChatBubble extends StatelessWidget {
   /// Plain text for user messages.
   Widget _userText() {
     return SelectableText(
-      message.text,
+      widget.message.text,
       style: const TextStyle(
         color: AppColors.textPrimary,
         fontSize: 14.5,
@@ -92,7 +165,7 @@ class ChatBubble extends StatelessWidget {
   /// Markdown-rendered text for AI messages.
   Widget _aiMarkdown() {
     final text =
-        message.text.isEmpty && message.isStreaming ? ' ' : message.text;
+        widget.message.text.isEmpty && widget.message.isStreaming ? ' ' : widget.message.text;
 
     return MarkdownBody(
       data: text,

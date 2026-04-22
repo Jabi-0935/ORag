@@ -384,7 +384,7 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
 
 
 def start_nomic_server(model_path: str,
-                       n_ctx: int = 128,
+                       n_ctx: int = 512,
                        n_threads: int = 0) -> bool:
     """
     Start a *second* llama-server process on _NOMIC_PORT (8083) loaded
@@ -541,6 +541,8 @@ def _gen_via_server(
         "n_predict":   max_tokens,
         "temperature": temperature,
         "top_p":       top_p,
+        "top_k":       20,
+        "presence_penalty": 1.5,
         "stream":      stream_cb is not None,
         "stop":        ["<|im_end|>", "<|im_start|>", "</s>"],
     }).encode()
@@ -684,10 +686,10 @@ class LlamaCppModel:
       3. llama-server      (auto-extracted from llamacpp_bin.zip)
     """
 
-    DEFAULT_CTX      = 768
-    DEFAULT_MAX_TOK  = 320
-    DEFAULT_TEMP     = 0.7
-    DEFAULT_TOP_P    = 0.9
+    DEFAULT_CTX      = 2048
+    DEFAULT_MAX_TOK  = 512
+    DEFAULT_TEMP     = 0.3
+    DEFAULT_TOP_P    = 0.8
     DEFAULT_THREADS  = 0   # 0 = auto-detect via _optimal_threads()
 
     def __init__(self) -> None:
@@ -977,22 +979,24 @@ class _ThinkingStreamFilter:
 
 def build_rag_prompt(context_chunks: list[str], question: str) -> str:
     """
-    Build a RAG prompt using Qwen 2.5's ChatML instruction format.
+    Build a RAG prompt using Qwen3.5 ChatML instruction format.
     (<|im_start|> / <|im_end|> tokens)
-    Each chunk is capped at 800 chars to stay within ctx=768 budget.
+    Each chunk is capped at 1200 chars to fit within ctx=2048 budget.
     """
-    # Cap each chunk so total prompt stays within context window:
-    # 2 chunks Ã— 800 chars â‰ˆ 300 tokens, + system (~80) + question (~30) = ~410 tokens
-    # leaving ~350 tokens for the reply (max_tok=256 + overhead).
-    capped = [c[:800] for c in context_chunks]
+    # Cap each chunk: 4 chunks x 1200 chars ~ 1200 tokens
+    # + system (~100) + question (~50) = ~1350 tokens
+    # leaving ~700 tokens for the reply (max_tok=512 + overhead).
+    capped = [c[:1200] for c in context_chunks]
     ctx_text = "\n\n---\n\n".join(capped)
     system_msg = (
-        "You are a helpful assistant. "
-        "Answer ONLY based on the provided context. "
-        "Write at least 2-3 sentences â€” never give a one-word answer. "
-        "Do NOT just repeat the question. "
-        "If the answer is not in the context, say \"I don't know.\". "
-        "Reply with only your final answer â€” no reasoning steps."
+        "You are a precise document assistant. "
+        "Answer the question using ONLY the provided context. "
+        "Look carefully for names, titles, authors, dates, and specific facts. "
+        "If the question asks about authorship, look for phrases like "
+        "'written by', 'author', 'by [Name]', or title page information. "
+        "Provide a clear, complete answer of 2-4 sentences. "
+        "If the answer is not in the context, say \"I don't know based on the provided documents.\" "
+        "Do NOT make up information. Do NOT repeat the question."
     )
     return (
         f"<|im_start|>system\n{system_msg}<|im_end|>\n"
