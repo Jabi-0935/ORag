@@ -211,7 +211,6 @@ jobs:
             --release \
             --obfuscate \
             --split-debug-info=build/debug-info \
-            --target-platform android-arm,android-arm64,android-x64 \
             --split-per-abi
         env:
           # Pass Gradle JVM args for Chaquopy + large dependency sets
