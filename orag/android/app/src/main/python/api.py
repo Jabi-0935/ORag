@@ -1,16 +1,13 @@
-from pipeline import (
-    init, chat_direct, get_bootstrap_event, is_model_loaded,
-    register_auto_download_callbacks,
-    ingest_document as pipeline_ingest,
-    list_documents as pipeline_list_docs,
-    delete_document_by_id as pipeline_delete_doc,
-    clear_all_documents as pipeline_clear_docs,
-    ask as pipeline_ask,
-)
-from downloader import set_model_dir, auto_download_default, model_dest_path, QWEN_MODEL
-from runtime.bootstrap import BootstrapState
 import threading
 import json
+import os
+import time
+
+# Deferred imports to prevent module-level hangs
+pipeline = None
+downloader = None
+runtime = None
+bootstrap = None
 
 _initialized = False
 _init_lock = threading.Lock()
@@ -97,7 +94,12 @@ def ensure_ready(model_path=None):
         return
     with _init_lock:
         if not _initialized:
-            init(model_path)   # this will now BLOCK until models are ready
+            # Need imports here too if calling ensure_ready directly
+            global pipeline
+            if pipeline is None:
+                import pipeline as pipe_mod
+                pipeline = pipe_mod
+            pipeline.init(model_path)   # this will now BLOCK until models are ready
             _initialized = True
 
 
@@ -111,86 +113,107 @@ def init_with_progress(model_path, progress_callback):
     progress_callback is a Kotlin method reference called via .invoke(jsonString).
     Events have the shape: {"state": "downloading|loading|ready|error", "progress": 0.0-1.0, "message": "..."}
     """
-    global _initialized
+    global _initialized, pipeline, downloader, runtime, bootstrap
 
     if _initialized:
-        _emit_progress("ready", 1.0, "AI engine ready.")
+        _emit_progress("ready", 1.0, "Ready.")
         return
 
     _set_progress_callback(progress_callback)
 
     with _init_lock:
         if _initialized:
-            _emit_progress("ready", 1.0, "AI engine ready.")
+            _emit_progress("ready", 1.0, "Ready.")
             return
 
         try:
-            _log_init(f"Starting init_with_progress. model_path={model_path}")
-            # Step 0: Setup
-            _emit_progress("downloading", 0.0, "Preparing AI engine…")
+            import gc
+            # IMMEDIATE progress before any heavy imports
+            _emit_progress("downloading", 0.01, "[BOOTSTRAP] Initializing Python runtime…")
+            _log_init("Starting init_with_progress Stage 0 (v3)")
+            
+            # Step 0: Imports (Deferred)
+            _log_init("Importing modules...")
+            import pipeline as pipe_mod
+            import downloader as dl_mod
+            from runtime import bootstrap as bs_mod
+            pipeline = pipe_mod
+            downloader = dl_mod
+            bootstrap = bs_mod
+            _log_init("Imports successful.")
+
+            _emit_progress("downloading", 0.05, "[SYS] Configuring storage layer…")
 
             if model_path:
-                set_model_dir(model_path)
+                downloader.set_model_dir(model_path)
+                _log_init(f"Model dir set: {model_path}")
 
             from storage import init_db
-            from pipeline import retriever, runtime
+            _log_init("Initializing database...")
             init_db()
-            retriever.reload()
+            _log_init("Reloading retriever...")
+            pipeline.retriever.reload()
+            _log_init("Stage 0/1 done")
 
             # Step 1: Download models (with progress)
+            _log_init("Stage 2: Sequential downloads starting")
             download_done = threading.Event()
             download_error = [None]
 
             def on_download_progress(frac, text):
-                _emit_progress("downloading", frac, text)
+                _emit_progress("downloading", frac, f"[DL] {text}")
 
             def on_download_done(success, message):
+                _log_init(f"Download callback: success={success}, msg={message}")
                 if not success:
                     download_error[0] = message
                 download_done.set()
 
-            auto_download_default(
+            downloader.auto_download_default(
                 on_progress=on_download_progress,
                 on_done=on_download_done,
             )
 
             # Wait for download to complete (sequential)
-            _log_init("Waiting for auto_download_default...")
-            # Note: auto_download_default is synchronous in our current implementation.
-            # No need to wait on Event unless it becomes async.
             _log_init("auto_download_default finished.")
+            gc.collect() 
 
             if download_error[0]:
-                _emit_progress("error", 1.0, download_error[0])
+                _emit_progress("error", 1.0, f"[ERR-DL] {download_error[0]}")
                 return
 
             # Step 2: Load model (with progress)
-            qwen_path = model_dest_path(QWEN_MODEL["filename"])
+            _log_init("Stage 3: Model loading starting")
+            qwen_path = downloader.model_dest_path(downloader.QWEN_MODEL["filename"])
 
-            if not runtime.is_loaded():
+            if not pipeline.runtime.is_loaded():
                 _log_init(f"Loading Qwen model from: {qwen_path}")
-                _emit_progress("loading", 0.05, "Starting AI engine…")
+                _emit_progress("loading", 0.05, "[LOAD] Initializing inference engine…")
 
                 def on_load_progress(frac, text):
-                    _emit_progress("loading", frac, text or "Loading AI engine…")
+                    msg = f"[LOAD] {text}" if text else "[LOAD] Warming up…"
+                    _emit_progress("loading", frac, msg)
 
-                runtime.load(qwen_path, on_progress=on_load_progress)
+                pipeline.runtime.load(qwen_path, on_progress=on_load_progress)
                 _log_init("Qwen model loaded successfully.")
 
             # Step 3: Start embedding engine for RAG semantic search
             from downloader import NOMIC_MODEL
-            nomic_path = model_dest_path(NOMIC_MODEL["filename"])
-            import os
+            nomic_path = downloader.model_dest_path(NOMIC_MODEL["filename"])
             from runtime.model_runtime import LlamaModelRuntime
-            if os.path.isfile(nomic_path) and isinstance(runtime, LlamaModelRuntime):
-                _emit_progress("loading", 0.95, "Starting embedding engine…")
-                runtime.start_nomic_server_if_needed(nomic_path)
+            if os.path.isfile(nomic_path) and isinstance(pipeline.runtime, LlamaModelRuntime):
+                _log_init(f"Starting Nomic server from: {nomic_path}")
+                _emit_progress("loading", 0.95, "[LOAD] Starting semantic index…")
+                pipeline.runtime.start_nomic_server_if_needed(nomic_path)
+                _log_init("Nomic server ready.")
 
             _initialized = True
-            _emit_progress("ready", 1.0, "AI engine ready!")
+            _log_init("Initialization complete.")
+            _emit_progress("ready", 1.0, "[READY] System online.")
 
         except Exception as e:
             _emit_progress("error", 1.0, f"Init failed: {e}")
+            _log_init(f"Init failed: {e}")
             raise
 
 
@@ -200,12 +223,13 @@ def get_status():
         return {"state": "ready", "progress": 1.0, "message": "AI engine ready."}
 
     try:
-        evt = get_bootstrap_event()
+        from runtime import bootstrap as bs_mod
+        evt = bs_mod.get_bootstrap_event() # Or use global bootstrap if set
         state_map = {
-            BootstrapState.IDLE: "idle",
-            BootstrapState.DOWNLOADING: "downloading",
-            BootstrapState.READY: "ready",
-            BootstrapState.ERROR: "error",
+            bs_mod.BootstrapState.IDLE: "idle",
+            bs_mod.BootstrapState.DOWNLOADING: "downloading",
+            bs_mod.BootstrapState.READY: "ready",
+            bs_mod.BootstrapState.ERROR: "error",
         }
         return {
             "state": state_map.get(evt.state, "idle"),
@@ -231,7 +255,8 @@ def chat(query):
         wait_for_server()
         trim_history()
 
-        ok, response = chat_direct(
+        global pipeline
+        ok, response = pipeline.chat_direct(
             question=query,
             history=_conversation_history,
             summary=""
@@ -250,14 +275,7 @@ def chat(query):
 
 
 def chat_stream(query, token_callback):
-    """Streaming chat — calls token_callback for each generated token.
-
-    ``token_callback`` is a Kotlin method reference passed via Chaquopy.
-    On the Python side it is a ``PyObject`` that we call with ``.invoke(token)``
-    (Chaquopy's standard mechanism for calling JVM method references).
-
-    Returns the full response string when generation finishes.
-    """
+    """Streaming chat — calls token_callback for each generated token."""
     global _is_generating, _stop_flag
 
     if _is_generating:
@@ -273,13 +291,13 @@ def chat_stream(query, token_callback):
 
         def _on_token(token):
             try:
-                # Chaquopy method references are called via .invoke()
                 token_callback.invoke(token)
             except Exception as e:
                 print(f"[CHAT-STREAM] callback error: {e}")
 
         trim_history()
-        ok, response = chat_direct(
+        global pipeline
+        ok, response = pipeline.chat_direct(
             question=query,
             history=_conversation_history,
             summary="",
@@ -303,43 +321,48 @@ def chat_stream(query, token_callback):
 # ------------------------------------------------------------------ #
 
 def upload_document(file_path):
-    """Ingest a PDF/TXT document into the RAG pipeline.
-    Returns JSON: {"success": true/false, "message": "..."}
-
-    NOTE: pipeline.ingest_document() handles resolve_uri internally,
-    so we pass the raw file_path (which may be a content:// URI).
-    """
     try:
-        ok, msg = pipeline_ingest(file_path)
+        global pipeline
+        if pipeline is None:
+            import pipeline as pipe_mod
+            pipeline = pipe_mod
+        ok, msg = pipeline.ingest_document(file_path)
         return json.dumps({"success": ok, "message": msg})
     except Exception as e:
         return json.dumps({"success": False, "message": f"Error: {e}"})
 
 
 def list_docs():
-    """Return JSON array of ingested documents.
-    Each doc: {"id": int, "name": str, "num_chunks": int, "added_at": str}
-    """
     try:
-        docs = pipeline_list_docs()
+        global pipeline
+        if pipeline is None:
+            import pipeline as pipe_mod
+            pipeline = pipe_mod
+        docs = pipeline.list_documents()
         return json.dumps(docs)
     except Exception as e:
         return json.dumps([])
 
 
 def delete_doc(doc_id):
-    """Delete a document by ID. Returns JSON status."""
     try:
-        pipeline_delete_doc(int(doc_id))
+        global pipeline
+        if pipeline is None:
+            import pipeline as pipe_mod
+            pipeline = pipe_mod
+        pipeline.delete_document_by_id(int(doc_id))
         return json.dumps({"success": True, "message": "Document deleted."})
     except Exception as e:
         return json.dumps({"success": False, "message": f"Error: {e}"})
 
 
 def clear_docs():
-    """Clear all documents. Returns JSON status."""
     try:
-        pipeline_clear_docs()
+        global pipeline
+        if pipeline is None:
+            import pipeline as pipe_mod
+            pipeline = pipe_mod
+        pipeline.clear_all_documents()
         return json.dumps({"success": True, "message": "All documents cleared."})
     except Exception as e:
         return json.dumps({"success": False, "message": f"Error: {e}"})
@@ -350,11 +373,7 @@ def clear_docs():
 # ------------------------------------------------------------------ #
 
 def ask_rag(query, token_callback):
-    """RAG streaming query with source attribution.
-
-    Streams tokens via token_callback, returns JSON with answer + sources:
-    {"answer": "...", "sources": [{"doc_name": "...", "chunk_text": "...", "score": 0.85}]}
-    """
+    """RAG streaming query with source attribution."""
     global _is_generating, _stop_flag
 
     if _is_generating:
@@ -374,7 +393,8 @@ def ask_rag(query, token_callback):
             except Exception as e:
                 print(f"[RAG-STREAM] callback error: {e}")
 
-        ok, response, sources = pipeline_ask(
+        global pipeline
+        ok, response, sources = pipeline.ask(
             question=query,
             stream_cb=_on_token,
         )
@@ -396,15 +416,17 @@ def ask_rag(query, token_callback):
 # ------------------------------------------------------------------ #
 
 def get_engine_health():
-    """Return JSON with model/server health info for the settings screen.
-    Model names and filenames are intentionally hidden from the UI.
-    """
+    """Return JSON with model/server health info for the settings screen."""
     try:
-        from pipeline import runtime, retriever
+        global pipeline
+        if pipeline is None:
+            import pipeline as pipe_mod
+            pipeline = pipe_mod
+            
         from runtime.model_runtime import LlamaModelRuntime
 
         health = {
-            "model_loaded": runtime.is_loaded(),
+            "model_loaded": pipeline.runtime.is_loaded(),
             "backend": "On-device",
             "qwen_ready": False,
             "nomic_ready": False,
@@ -412,14 +434,14 @@ def get_engine_health():
             "chunk_count": 0,
         }
 
-        if isinstance(runtime, LlamaModelRuntime):
-            h = runtime.health()
+        if isinstance(pipeline.runtime, LlamaModelRuntime):
+            h = pipeline.runtime.health()
             health["qwen_ready"] = h.qwen_ready
             health["nomic_ready"] = h.nomic_ready
             health["backend"] = "On-device"
 
         try:
-            docs = pipeline_list_docs()
+            docs = pipeline.list_documents()
             health["doc_count"] = len(docs)
             health["chunk_count"] = sum(d.get("num_chunks", 0) for d in docs)
         except Exception:
