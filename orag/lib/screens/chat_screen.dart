@@ -44,8 +44,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   // ---- Actions ----
 
   void _sendMessage() {
-    final text = _controller.text.trim();
-    if (text.isEmpty) return;
+    String text = _controller.text.trim();
+    final ragMode = ref.read(chatControllerProvider).ragMode;
+    final docName = ref.read(chatControllerProvider).activeDocumentName;
+
+    if (text.isEmpty) {
+      if (ragMode && docName != null) {
+        text = 'Tell me about $docName and suggest some questions I can ask.';
+      } else {
+        return;
+      }
+    }
     HapticFeedback.lightImpact();
     _controller.clear();
     ref.read(chatControllerProvider.notifier).submitQuery(text);

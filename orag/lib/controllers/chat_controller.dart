@@ -387,14 +387,25 @@ class ChatController extends Notifier<ChatState> {
     final path = result.files.single.path;
     if (path == null) return;
 
-    state = state.copyWith(isUploading: true, uploadStatus: 'Reading file…');
+    final fileName = path.split('/').last.split('\\').last;
+    final tempMsg = ChatMessage(role: MessageRole.system, text: 'Uploading $fileName…');
+
+    state = state.copyWith(
+      isUploading: true, 
+      uploadStatus: 'Reading file…',
+      messages: [...state.messages, tempMsg],
+    );
 
     final stopwatch = Stopwatch()..start();
     final statusTimer = Stream.periodic(
-      const Duration(seconds: 2),
+      const Duration(seconds: 1),
       (i) => i,
     ).listen((_) {
-      state = state.copyWith(uploadStatus: 'Processing… ${stopwatch.elapsed.inSeconds}s');
+      tempMsg.text = 'Processing $fileName… ${stopwatch.elapsed.inSeconds}s';
+      state = state.copyWith(
+        uploadStatus: 'Processing… ${stopwatch.elapsed.inSeconds}s',
+        messages: List.of(state.messages),
+      );
     });
 
     final response = await _platform.uploadDocument(path);
@@ -403,14 +414,14 @@ class ChatController extends Notifier<ChatState> {
     final success = response['success'] == true;
     final message = response['message'] as String? ?? '';
 
-    // Extract filename for the system message
-    final fileName = path.split('/').last.split('\\').last;
+    final finalMessages = state.messages.where((m) => m != tempMsg).toList();
 
     state = state.copyWith(
       isUploading: false,
       uploadStatus: '',
       errorBanner: success ? null : 'Upload failed: $message',
       clearError: success,
+      messages: finalMessages,
     );
 
     // Auto-switch to RAG mode with a system message
