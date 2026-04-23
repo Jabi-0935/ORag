@@ -20,16 +20,18 @@ class ChatState {
   final String? errorBanner; // non-destructive error display
   final bool isUploading;
   final String uploadStatus;
+  final String? activeDocumentName;
 
   const ChatState({
     this.messages = const [],
     this.isGenerating = false,
-    this.ragMode = true,
+    this.ragMode = false,
     this.initStatus = const InitStatus(),
     this.initDone = false,
     this.errorBanner,
     this.isUploading = false,
     this.uploadStatus = '',
+    this.activeDocumentName,
   });
 
   ChatState copyWith({
@@ -42,6 +44,8 @@ class ChatState {
     bool clearError = false,
     bool? isUploading,
     String? uploadStatus,
+    String? activeDocumentName,
+    bool clearActiveDocument = false,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
@@ -52,6 +56,7 @@ class ChatState {
       errorBanner: clearError ? null : (errorBanner ?? this.errorBanner),
       isUploading: isUploading ?? this.isUploading,
       uploadStatus: uploadStatus ?? this.uploadStatus,
+      activeDocumentName: clearActiveDocument ? null : (activeDocumentName ?? this.activeDocumentName),
     );
   }
 }
@@ -156,12 +161,41 @@ class ChatController extends Notifier<ChatState> {
     }
   }
 
-  // ---- Mode toggle ----
+  // ---- Mode management ----
 
   void toggleRagMode() {
     if (!state.isGenerating) {
-      state = state.copyWith(ragMode: !state.ragMode);
+      final newMode = !state.ragMode;
+      state = state.copyWith(ragMode: newMode, clearActiveDocument: !newMode);
+      _addSystemMessage(
+        newMode
+            ? '📄 Switched to Document mode — ask questions about your uploaded documents.'
+            : '🤖 Switched to AI Chat mode — general-purpose assistant.',
+      );
     }
+  }
+
+  void _exitRagMode() {
+    state = state.copyWith(ragMode: false, clearActiveDocument: true);
+    _addSystemMessage(
+      '🤖 Exited Document mode. You\'re now chatting with the AI assistant.\n'
+      'Tap ➕ to add a document and return to Document mode.',
+    );
+  }
+
+  void _enterRagMode({String? docName}) {
+    state = state.copyWith(ragMode: true, activeDocumentName: docName);
+    final label = docName != null ? '"$docName"' : 'your document';
+    _addSystemMessage(
+      '📄 Document mode activated — $label has been loaded.\n'
+      'Ask questions about it below. Type **quit** to return to AI Chat.',
+    );
+  }
+
+  void _addSystemMessage(String text) {
+    final sysMsg = ChatMessage(role: MessageRole.system, text: text);
+    state = state.copyWith(messages: [...state.messages, sysMsg]);
+    _persistMessages();
   }
 
   // ---- Token batching ----
@@ -188,12 +222,18 @@ class ChatController extends Notifier<ChatState> {
     }
   }
 
-  // ---- Unified query (Tasks 2.2 + 2.3) ----
+  // ---- Unified query ----
 
   void submitQuery(String text) {
     if (state.isGenerating || !state.initDone) return;
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
+
+    // "quit" command exits RAG mode and returns to AI chat
+    if (state.ragMode && trimmed.toLowerCase() == 'quit') {
+      _exitRagMode();
+      return;
+    }
 
     if (state.ragMode) {
       _submitRag(trimmed);
@@ -363,13 +403,20 @@ class ChatController extends Notifier<ChatState> {
     final success = response['success'] == true;
     final message = response['message'] as String? ?? '';
 
+    // Extract filename for the system message
+    final fileName = path.split('/').last.split('\\').last;
+
     state = state.copyWith(
       isUploading: false,
       uploadStatus: '',
       errorBanner: success ? null : 'Upload failed: $message',
-      ragMode: true,
       clearError: success,
     );
+
+    // Auto-switch to RAG mode with a system message
+    if (success) {
+      _enterRagMode(docName: fileName);
+    }
   }
 
   void dismissError() {

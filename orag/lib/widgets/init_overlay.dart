@@ -192,6 +192,11 @@ class _InitOverlayState extends State<InitOverlay>
             width: 76,
             height: 76,
             alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              color: Colors.transparent,
+            ),
+            clipBehavior: Clip.antiAlias,
             child: Image.asset(
               'assets/logo.png',
               width: 76,
@@ -253,9 +258,12 @@ class _InitOverlayState extends State<InitOverlay>
     );
   }
 
-  /// Cleans up developer brackets from backend messages (e.g., "[LOAD]", "[BOOTSTRAP]")
+  /// Cleans up developer brackets from backend messages (e.g., "[LOAD]", "[BOOTSTRAP]", "(12.3s)")
   String _sanitizeMsg(String message) {
-    return message.replaceAll(RegExp(r'\[.*?\]\s*'), '').trim();
+    return message
+        .replaceAll(RegExp(r'\[.*?\]\s*'), '')
+        .replaceAll(RegExp(r'\(.*?s\)\s*'), '')
+        .trim();
   }
 
   /// Primary status text — uses the backend message when available,

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../controllers/chat_controller.dart';
+import '../models/chat_message.dart';
 import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_bubble.dart';
@@ -135,6 +136,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   controller: _controller,
                   enabled: chatState.initDone,
                   isGenerating: chatState.isGenerating,
+                  ragMode: chatState.ragMode,
+                  activeDocumentName: chatState.activeDocumentName,
                   onSend: _sendMessage,
                   onStop: _stopGeneration,
                   onAddFile: () => ref.read(chatControllerProvider.notifier).pickAndUploadFile(),
@@ -180,6 +183,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             width: 36,
             height: 36,
             alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              color: Colors.transparent,
+            ),
+            clipBehavior: Clip.antiAlias,
             child: Image.asset(
               'assets/logo.png',
               width: 36,
@@ -191,7 +199,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             ),
           ),
           const SizedBox(width: 12),
-          // Title + mode subtitle
+          // Title + mode badge
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -204,13 +212,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                const Text(
-                  'Offline AI Assistant',
-                  style: TextStyle(
-                    color: AppColors.textDim,
-                    fontSize: 12,
-                  ),
-                ),
+                const SizedBox(height: 2),
+                _buildModeBadge(chatState),
               ],
             ),
           ),
@@ -223,6 +226,50 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             color: AppColors.textSecondary,
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildModeBadge(ChatState chatState) {
+    final isRag = chatState.ragMode;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        ref.read(chatControllerProvider.notifier).toggleRagMode();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeInOut,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        decoration: BoxDecoration(
+          color: (isRag ? AppColors.secondary : AppColors.primary)
+              .withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: (isRag ? AppColors.secondary : AppColors.primary)
+                .withValues(alpha: 0.35),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isRag ? Icons.description_outlined : Icons.smart_toy_outlined,
+              size: 13,
+              color: isRag ? AppColors.secondary : AppColors.primary,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              isRag ? 'Document Mode' : 'AI Chat',
+              style: TextStyle(
+                color: isRag ? AppColors.secondary : AppColors.primary,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -240,6 +287,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       itemCount: chatState.messages.length,
       itemBuilder: (context, index) {
         final msg = chatState.messages[index];
+
+        // System messages render as centered info cards
+        if (msg.role == MessageRole.system) {
+          return _buildSystemMessage(msg);
+        }
 
         // If this is the AI message and it's streaming but empty, show typing indicator
         if (msg.isAssistant && msg.isStreaming && msg.isEmpty) {
@@ -259,6 +311,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
   }
 
+  Widget _buildSystemMessage(ChatMessage msg) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceLight.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: AppColors.divider,
+            width: 1,
+          ),
+        ),
+        child: Text(
+          msg.text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 13,
+            height: 1.4,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildEmptyState(ChatState chatState) {
     return Center(
       child: Column(
@@ -269,86 +347,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             width: 80,
             height: 80,
             decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color:
-                      (chatState.ragMode ? AppColors.secondary : AppColors.primary)
-                          .withValues(alpha: 0.15),
-                  blurRadius: 30,
-                  spreadRadius: 5,
-                ),
-              ],
+              borderRadius: BorderRadius.circular(16),
+              color: Colors.transparent,
             ),
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              child: Image.asset(
-                'assets/logo.png',
-                width: 80,
-                height: 80,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => const SizedBox(
-                  width: 80, height: 80,
-                ),
+            clipBehavior: Clip.antiAlias,
+            child: Image.asset(
+              'assets/logo.png',
+              width: 80,
+              height: 80,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const SizedBox(
+                width: 80, height: 80,
               ),
             ),
           ),
           const SizedBox(height: 20),
-          Text(
-            chatState.ragMode
-                ? 'Ask about your documents'
-                : 'Ask me anything',
-            style: const TextStyle(
+          const Text(
+            'How can I assist you?',
+            style: TextStyle(
               color: AppColors.textPrimary,
               fontSize: 18,
               fontWeight: FontWeight.w600,
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            chatState.ragMode
-                ? 'Upload documents via ➕ then ask questions'
-                : 'Your offline AI assistant is ready',
-            style: const TextStyle(
-              color: AppColors.textDim,
-              fontSize: 14,
-            ),
-          ),
-          const SizedBox(height: 28),
-          // Suggestion chips
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
-            children: (chatState.ragMode
-                    ? [
-                        'Summarize this document',
-                        'What are the key findings?',
-                        'List the main topics',
-                      ]
-                    : [
-                        'Explain quantum computing',
-                        'Write a short poem',
-                        'Tips for productivity',
-                      ])
-                .map((suggestion) => ActionChip(
-                      label: Text(suggestion,
-                          style: const TextStyle(
-                              color: AppColors.textSecondary, fontSize: 12)),
-                      backgroundColor: AppColors.surface,
-                      side: BorderSide(
-                          color: AppColors.primary.withValues(alpha: 0.3)),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20)),
-                      elevation: 2,
-                      shadowColor: AppColors.primary.withValues(alpha: 0.2),
-                      onPressed: () {
-                        HapticFeedback.selectionClick();
-                        _controller.text = suggestion;
-                        _sendMessage();
-                      },
-                    ))
-                .toList(),
           ),
         ],
       ),

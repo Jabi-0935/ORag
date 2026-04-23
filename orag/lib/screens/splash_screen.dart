@@ -116,13 +116,23 @@ class _SplashScreenState extends State<SplashScreen>
               opacity: _logoFade,
               child: ScaleTransition(
                 scale: _logoScale,
-                child: Image.asset(
-                  'assets/logo.png',
+                child: Container(
                   width: 120,
                   height: 120,
-                  errorBuilder: (_, __, ___) => const SizedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(28),
+                    color: Colors.transparent,
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Image.asset(
+                    'assets/logo.png',
                     width: 120,
                     height: 120,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const SizedBox(
+                      width: 120,
+                      height: 120,
+                    ),
                   ),
                 ),
               ),

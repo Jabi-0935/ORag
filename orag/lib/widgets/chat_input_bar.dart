@@ -11,6 +11,8 @@ class ChatInputBar extends StatefulWidget {
   final TextEditingController controller;
   final bool enabled;
   final bool isGenerating;
+  final bool ragMode;
+  final String? activeDocumentName;
   final VoidCallback onSend;
   final VoidCallback onStop;
   final VoidCallback onAddFile;
@@ -22,6 +24,8 @@ class ChatInputBar extends StatefulWidget {
     required this.controller,
     required this.enabled,
     required this.isGenerating,
+    required this.ragMode,
+    this.activeDocumentName,
     required this.onSend,
     required this.onStop,
     required this.onAddFile,
@@ -228,6 +232,11 @@ class _ChatInputBarState extends State<ChatInputBar> {
     if (!widget.enabled) return 'AI is loading…';
     if (widget.isGenerating) return 'Generating…';
     if (_isListening) return 'Listening…';
+    if (widget.ragMode) {
+      return widget.activeDocumentName != null 
+          ? 'Ask about ${widget.activeDocumentName}… (type "quit" to exit)' 
+          : 'Ask about your documents… (type "quit" to exit)';
+    }
     return 'Ask me anything…';
   }
 
