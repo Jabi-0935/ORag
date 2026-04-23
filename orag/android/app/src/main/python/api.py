@@ -168,13 +168,18 @@ def init_with_progress(model_path, progress_callback):
 
                 pipeline.runtime.load(qwen_path, on_progress=on_load_progress)
 
-            # Step 3: Start embedding engine for RAG semantic search
+            # Step 3: Start embedding engine (lazy or eager based on RAM profile)
             from downloader import NOMIC_MODEL
             nomic_path = downloader.model_dest_path(NOMIC_MODEL["filename"])
-            from runtime.model_runtime import LlamaModelRuntime
-            if os.path.isfile(nomic_path) and isinstance(pipeline.runtime, LlamaModelRuntime):
-                _emit_progress("loading", 0.95, "[LOAD] Starting semantic index…")
-                pipeline.runtime.start_nomic_server_if_needed(nomic_path)
+            from memory_management import get_profile, ensure_nomic_server
+            mem_profile = get_profile()
+            if os.path.isfile(nomic_path):
+                if mem_profile.get("nomic_lazy", False):
+                    _emit_progress("loading", 0.95,
+                                   f"[LOAD] Semantic index deferred (profile={mem_profile['profile']})")
+                else:
+                    _emit_progress("loading", 0.95, "[LOAD] Starting semantic index…")
+                    ensure_nomic_server(nomic_path)
 
             _initialized = True
             _emit_progress("ready", 1.0, "Ready to chat!")
@@ -420,5 +425,18 @@ def get_engine_health():
             pass
 
         return json.dumps(health)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# ------------------------------------------------------------------ #
+#  Resource usage (memory + battery for Settings UI)                    #
+# ------------------------------------------------------------------ #
+
+def get_resource_usage():
+    """Return JSON with live memory, battery, and profile info."""
+    try:
+        from memory_management import get_resource_report_json
+        return get_resource_report_json()
     except Exception as e:
         return json.dumps({"error": str(e)})

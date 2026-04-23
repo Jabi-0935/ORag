@@ -293,6 +293,17 @@ class PlatformService {
     }
   }
 
+  /// Get live resource usage (memory, battery, profile) for settings screen.
+  Future<Map<String, dynamic>> getResourceUsage() async {
+    try {
+      final result = await _method.invokeMethod('getResourceUsage');
+      return jsonDecode(result as String) as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint('[PlatformService] getResourceUsage error: $e');
+      return {};
+    }
+  }
+
   // ---- Diagnostics ----
   
   /// Get init logs for debugging.

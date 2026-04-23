@@ -127,74 +127,15 @@ def _optimal_threads() -> int:
 
 
 # ------------------------------------------------------------------ #
-#  Adaptive memory profiling                                           #
+#  Adaptive memory profiling (delegated to memory_management.py)       #
 # ------------------------------------------------------------------ #
 
-def _get_total_ram_gb() -> float:
-    """Detect total device RAM in GB via /proc/meminfo or os.sysconf."""
-    try:
-        with open("/proc/meminfo", "r") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    kb = int(line.split()[1])
-                    return kb / (1024 * 1024)
-    except Exception:
-        pass
-    try:
-        pages = os.sysconf('SC_PHYS_PAGES')
-        page_size = os.sysconf('SC_PAGE_SIZE')
-        if pages > 0 and page_size > 0:
-            return (pages * page_size) / (1024 ** 3)
-    except Exception:
-        pass
-    return 0.0
-
-
-def _get_memory_profile() -> dict:
-    """
-    Return adaptive config based on detected RAM.
-
-    Profiles:
-      <=3 GB: ULTRA_LOW  ctx=512,  max_tok=256, no Nomic, 2 threads
-      <=4 GB: LOW        ctx=512,  max_tok=384, no Nomic, 2 threads
-      <=6 GB: MEDIUM     ctx=1024, max_tok=512, Nomic OK, 4 threads
-      > 6 GB: HIGH       ctx=2048, max_tok=512, Nomic OK, auto threads
-    """
-    total = _get_total_ram_gb()
-    print(f"[memory] Total RAM: {total:.1f} GB")
-
-    if total <= 0:
-        print("[memory] RAM detection failed, using LOW profile")
-        return {"profile": "LOW", "n_ctx": 512, "max_tokens": 384,
-                "n_threads": 2, "load_nomic": False, "nomic_ctx": 256}
-    if total <= 3.0:
-        return {"profile": "ULTRA_LOW", "n_ctx": 512, "max_tokens": 256,
-                "n_threads": 2, "load_nomic": False, "nomic_ctx": 256}
-    if total <= 4.5:
-        return {"profile": "LOW", "n_ctx": 512, "max_tokens": 384,
-                "n_threads": max(2, min(4, _optimal_threads())),
-                "load_nomic": False, "nomic_ctx": 256}
-    if total <= 6.5:
-        return {"profile": "MEDIUM", "n_ctx": 1024, "max_tokens": 512,
-                "n_threads": _optimal_threads(),
-                "load_nomic": True, "nomic_ctx": 384}
-    return {"profile": "HIGH", "n_ctx": 2048, "max_tokens": 512,
-            "n_threads": _optimal_threads(),
-            "load_nomic": True, "nomic_ctx": 512}
-
-
-_MEMORY_PROFILE: Optional[dict] = None
-
 def get_memory_profile() -> dict:
-    """Return the cached memory profile, computing it once."""
-    global _MEMORY_PROFILE
-    if _MEMORY_PROFILE is None:
-        _MEMORY_PROFILE = _get_memory_profile()
-        print(f"[memory] Profile: {_MEMORY_PROFILE['profile']} "
-              f"(ctx={_MEMORY_PROFILE['n_ctx']}, "
-              f"threads={_MEMORY_PROFILE['n_threads']}, "
-              f"nomic={'yes' if _MEMORY_PROFILE['load_nomic'] else 'no'})")
-    return _MEMORY_PROFILE
+    """Return the adaptive memory profile from memory_management module.
+    This is kept as a thin wrapper for backward compatibility.
+    """
+    from memory_management import get_profile
+    return get_profile()
 
 
 _LLAMASERVER_PROC  = None
@@ -479,18 +420,19 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
         ]
 
         # Adaptive flags based on RAM profile
-        if profile["profile"] in ("ULTRA_LOW", "LOW"):
-            # Low RAM: use mmap (let OS page-in), smaller KV cache, small batch
-            cmd.extend(["--cache-type-k", "q4_0",
-                         "--cache-type-v", "q4_0",
-                         "--batch-size", "64"])
-            print(f"  Memory mode: LOW (mmap=on, cache=q4_0, batch=64)")
-        else:
-            # Enough RAM: disable mmap for consistent latency, q8_0 cache
-            cmd.extend(["--no-mmap",
-                         "--cache-type-k", "q8_0",
-                         "--cache-type-v", "q8_0"])
-            print(f"  Memory mode: {profile['profile']} (mmap=off, cache=q8_0)")
+        kv_type = profile.get("kv_cache_type", "q8_0")
+        batch = profile.get("batch_size", 512)
+        use_mmap = profile.get("use_mmap", False)
+
+        cmd.extend(["--cache-type-k", kv_type,
+                     "--cache-type-v", kv_type])
+        if batch != 512:  # only override if non-default
+            cmd.extend(["--batch-size", str(batch)])
+        if not use_mmap:
+            cmd.extend(["--no-mmap"])
+
+        print(f"  Memory mode: {profile['profile']} "
+              f"(mmap={'on' if use_mmap else 'off'}, cache={kv_type}, batch={batch})")
         print(f"[llama-server] Starting: {cmd[0]}")
         print(f"  Model: {Path(model_path).name}")
         print("  Loading model into memory, please wait ...")

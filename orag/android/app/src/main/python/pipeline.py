@@ -102,20 +102,19 @@ def init(model_path: Optional[str] = None) -> None:
         print(f"[INIT] Model loading failed: {e}")
         raise
         
-    # Step 3: Conditionally start Nomic embedding server
-    # On low-RAM devices (<=4GB), skip Nomic to save ~140 MB — BM25 via FTS5
-    # handles retrieval with zero additional RAM.
+    # Step 3: Start Nomic embedding server (lazy or eager based on RAM profile)
+    # On low-RAM devices, Nomic is deferred to first RAG query to avoid OOM.
     if isinstance(runtime, LlamaModelRuntime):
-        from llm import get_memory_profile
-        mem_profile = get_memory_profile()
-        if mem_profile.get("load_nomic", True):
-            nomic_path = model_dest_path(NOMIC_MODEL["filename"])
-            if os.path.isfile(nomic_path):
-                print("[INIT] Starting Nomic embedding server...")
-                runtime.start_nomic_server_if_needed(nomic_path)
+        from memory_management import get_profile, ensure_nomic_server
+        mem_profile = get_profile()
+        nomic_path = model_dest_path(NOMIC_MODEL["filename"])
+        if mem_profile.get("nomic_lazy", False):
+            print(f"[INIT] Nomic deferred to first RAG query "
+                  f"(profile={mem_profile['profile']}, lazy mode)")
         else:
-            print(f"[INIT] Skipping Nomic server (profile={mem_profile['profile']}, "
-                  f"RAM too low — using BM25 only)")
+            if os.path.isfile(nomic_path):
+                print("[INIT] Starting Nomic embedding server (eager)...")
+                ensure_nomic_server(nomic_path)
 
 
 def _start_auto_download() -> None:

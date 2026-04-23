@@ -130,15 +130,14 @@ class HybridRetriever:
         if self._chunks:
             total = sum(len(c["tokens"]) for c in self._chunks)
             self._avg_dl = total / len(self._chunks)
-            # Only compute dense embeddings if Nomic server is enabled
+            # Lazy-start Nomic server if needed (on low-RAM, it defers to here)
             try:
-                from llm import get_memory_profile
-                profile = get_memory_profile()
-                if not profile.get("load_nomic", True):
-                    print("[retriever] Nomic disabled (low RAM) — BM25 only mode")
-                    return
-            except Exception:
-                pass
+                from memory_management import ensure_nomic_server, get_profile
+                from downloader import NOMIC_MODEL, model_dest_path
+                nomic_path = model_dest_path(NOMIC_MODEL["filename"])
+                ensure_nomic_server(nomic_path)
+            except Exception as e:
+                print(f"[retriever] Nomic lazy-start skipped: {e}")
             # Compute dense embeddings in background — doesn't block the UI
             threading.Thread(
                 target=self._compute_embeddings,
@@ -157,8 +156,13 @@ class HybridRetriever:
         try:
             from llm import get_embedding
             computed = {}
-            # Cap at 50 chunks — embed more for better coverage with Q8_0 model.
-            chunks_to_embed = self._chunks[:50]
+            # Adaptive chunk limit from memory profile
+            try:
+                from memory_management import get_profile
+                limit = get_profile().get("embed_chunk_limit", 50)
+            except Exception:
+                limit = 50
+            chunks_to_embed = self._chunks[:limit]
             for c in chunks_to_embed:
                 cid  = c["id"]
                 # Cap at 512 chars ≈ 150 tokens, matching Nomic ctx=512

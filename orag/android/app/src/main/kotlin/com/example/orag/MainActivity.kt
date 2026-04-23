@@ -333,6 +333,16 @@ class MainActivity : FlutterActivity() {
 						}
 					}.start()
 
+				} else if (call.method == "getResourceUsage") {
+					Thread {
+						try {
+							val response = ensureApiModule().callAttr("get_resource_usage")
+							runOnUiThread { result.success(response.toString()) }
+						} catch (e: Exception) {
+							runOnUiThread { result.error("ERROR", e.message, null) }
+						}
+					}.start()
+
 				} else {
 					result.notImplemented()
 				}
