@@ -102,12 +102,20 @@ def init(model_path: Optional[str] = None) -> None:
         print(f"[INIT] Model loading failed: {e}")
         raise
         
-    # Step 3: Ensure Nomic embedding server is started (so RAG works on app restarts)
+    # Step 3: Conditionally start Nomic embedding server
+    # On low-RAM devices (<=4GB), skip Nomic to save ~140 MB — BM25 via FTS5
+    # handles retrieval with zero additional RAM.
     if isinstance(runtime, LlamaModelRuntime):
-        nomic_path = model_dest_path(NOMIC_MODEL["filename"])
-        if os.path.isfile(nomic_path):
-            print("[INIT] Starting Nomic embedding server...")
-            runtime.start_nomic_server_if_needed(nomic_path)
+        from llm import get_memory_profile
+        mem_profile = get_memory_profile()
+        if mem_profile.get("load_nomic", True):
+            nomic_path = model_dest_path(NOMIC_MODEL["filename"])
+            if os.path.isfile(nomic_path):
+                print("[INIT] Starting Nomic embedding server...")
+                runtime.start_nomic_server_if_needed(nomic_path)
+        else:
+            print(f"[INIT] Skipping Nomic server (profile={mem_profile['profile']}, "
+                  f"RAM too low — using BM25 only)")
 
 
 def _start_auto_download() -> None:

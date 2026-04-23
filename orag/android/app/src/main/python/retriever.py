@@ -130,6 +130,15 @@ class HybridRetriever:
         if self._chunks:
             total = sum(len(c["tokens"]) for c in self._chunks)
             self._avg_dl = total / len(self._chunks)
+            # Only compute dense embeddings if Nomic server is enabled
+            try:
+                from llm import get_memory_profile
+                profile = get_memory_profile()
+                if not profile.get("load_nomic", True):
+                    print("[retriever] Nomic disabled (low RAM) — BM25 only mode")
+                    return
+            except Exception:
+                pass
             # Compute dense embeddings in background — doesn't block the UI
             threading.Thread(
                 target=self._compute_embeddings,

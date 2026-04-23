@@ -124,6 +124,79 @@ def _optimal_threads() -> int:
         return max(2, min(8, count // 2))
     except Exception:
         return 4
+
+
+# ------------------------------------------------------------------ #
+#  Adaptive memory profiling                                           #
+# ------------------------------------------------------------------ #
+
+def _get_total_ram_gb() -> float:
+    """Detect total device RAM in GB via /proc/meminfo or os.sysconf."""
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return kb / (1024 * 1024)
+    except Exception:
+        pass
+    try:
+        pages = os.sysconf('SC_PHYS_PAGES')
+        page_size = os.sysconf('SC_PAGE_SIZE')
+        if pages > 0 and page_size > 0:
+            return (pages * page_size) / (1024 ** 3)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _get_memory_profile() -> dict:
+    """
+    Return adaptive config based on detected RAM.
+
+    Profiles:
+      <=3 GB: ULTRA_LOW  ctx=512,  max_tok=256, no Nomic, 2 threads
+      <=4 GB: LOW        ctx=512,  max_tok=384, no Nomic, 2 threads
+      <=6 GB: MEDIUM     ctx=1024, max_tok=512, Nomic OK, 4 threads
+      > 6 GB: HIGH       ctx=2048, max_tok=512, Nomic OK, auto threads
+    """
+    total = _get_total_ram_gb()
+    print(f"[memory] Total RAM: {total:.1f} GB")
+
+    if total <= 0:
+        print("[memory] RAM detection failed, using LOW profile")
+        return {"profile": "LOW", "n_ctx": 512, "max_tokens": 384,
+                "n_threads": 2, "load_nomic": False, "nomic_ctx": 256}
+    if total <= 3.0:
+        return {"profile": "ULTRA_LOW", "n_ctx": 512, "max_tokens": 256,
+                "n_threads": 2, "load_nomic": False, "nomic_ctx": 256}
+    if total <= 4.5:
+        return {"profile": "LOW", "n_ctx": 512, "max_tokens": 384,
+                "n_threads": max(2, min(4, _optimal_threads())),
+                "load_nomic": False, "nomic_ctx": 256}
+    if total <= 6.5:
+        return {"profile": "MEDIUM", "n_ctx": 1024, "max_tokens": 512,
+                "n_threads": _optimal_threads(),
+                "load_nomic": True, "nomic_ctx": 384}
+    return {"profile": "HIGH", "n_ctx": 2048, "max_tokens": 512,
+            "n_threads": _optimal_threads(),
+            "load_nomic": True, "nomic_ctx": 512}
+
+
+_MEMORY_PROFILE: Optional[dict] = None
+
+def get_memory_profile() -> dict:
+    """Return the cached memory profile, computing it once."""
+    global _MEMORY_PROFILE
+    if _MEMORY_PROFILE is None:
+        _MEMORY_PROFILE = _get_memory_profile()
+        print(f"[memory] Profile: {_MEMORY_PROFILE['profile']} "
+              f"(ctx={_MEMORY_PROFILE['n_ctx']}, "
+              f"threads={_MEMORY_PROFILE['n_threads']}, "
+              f"nomic={'yes' if _MEMORY_PROFILE['load_nomic'] else 'no'})")
+    return _MEMORY_PROFILE
+
+
 _LLAMASERVER_PROC  = None
 _LLAMASERVER_LOCK  = threading.Lock()
 _ANDROID_EXE_PATH: Optional[str] = None   # set once by _ensure_android_binary
@@ -391,23 +464,33 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
             if on_progress:
                 on_progress(1.0, "AI engine ready!")
             return True
+        profile = get_memory_profile()
         cmd = [
             str(exe),
             "--model", model_path,
-            "--ctx-size", str(n_ctx),              # dynamic
-            "--threads", str(n_threads),           # dynamic
+            "--ctx-size", str(n_ctx),              # dynamic from profile
+            "--threads", str(n_threads),           # dynamic from profile
             "--threads-batch", str(n_threads),
-            "--port", str(_LLAMASERVER_PORT),      # FIXED
+            "--port", str(_LLAMASERVER_PORT),
             "--host", "127.0.0.1",
-
-            # Memory-efficient flags for 4GB Android devices
             "--n-gpu-layers", "0",
             "--flash-attn", "on",
-            "--no-mmap",              # Forces full load into RAM, avoids random disk access jitter
             "--cont-batching",
-            "--cache-type-k", "q8_0",
-            "--cache-type-v", "q8_0",
         ]
+
+        # Adaptive flags based on RAM profile
+        if profile["profile"] in ("ULTRA_LOW", "LOW"):
+            # Low RAM: use mmap (let OS page-in), smaller KV cache, small batch
+            cmd.extend(["--cache-type-k", "q4_0",
+                         "--cache-type-v", "q4_0",
+                         "--batch-size", "64"])
+            print(f"  Memory mode: LOW (mmap=on, cache=q4_0, batch=64)")
+        else:
+            # Enough RAM: disable mmap for consistent latency, q8_0 cache
+            cmd.extend(["--no-mmap",
+                         "--cache-type-k", "q8_0",
+                         "--cache-type-v", "q8_0"])
+            print(f"  Memory mode: {profile['profile']} (mmap=off, cache=q8_0)")
         print(f"[llama-server] Starting: {cmd[0]}")
         print(f"  Model: {Path(model_path).name}")
         print("  Loading model into memory, please wait ...")
@@ -717,11 +800,11 @@ class LlamaCppModel:
       3. llama-server      (auto-extracted from llamacpp_bin.zip)
     """
 
-    DEFAULT_CTX      = 2048
+    DEFAULT_CTX      = 2048    # fallback only; overridden by memory profile
     DEFAULT_MAX_TOK  = 512
     DEFAULT_TEMP     = 0.3
     DEFAULT_TOP_P    = 0.8
-    DEFAULT_THREADS  = 0   # 0 = auto-detect via _optimal_threads()
+    DEFAULT_THREADS  = 0   # 0 = auto-detect
 
     def __init__(self) -> None:
         self._model      = None
@@ -734,11 +817,17 @@ class LlamaCppModel:
     #  Loading                                                           #
     # ---------------------------------------------------------------- #
 
-    def load(self, model_path: str, n_ctx: int = DEFAULT_CTX,
+    def load(self, model_path: str, n_ctx: int = 0,
              n_threads: int = DEFAULT_THREADS, n_gpu_layers: int = 0,
              on_progress: Optional[Callable[[float, str], None]] = None) -> None:
+        # Use adaptive memory profile for ctx and threads
+        profile = get_memory_profile()
+        if n_ctx == 0:
+            n_ctx = profile["n_ctx"]
         if n_threads == 0:
-            n_threads = _optimal_threads()
+            n_threads = profile["n_threads"]
+        print(f"[LLM] Loading with ctx={n_ctx}, threads={n_threads} "
+              f"(profile={profile['profile']})")
         with self._lock:
             self._unload_internal()
 
@@ -852,7 +941,7 @@ class LlamaCppModel:
     def generate(
         self,
         prompt: str,
-        max_tokens:  int   = DEFAULT_MAX_TOK,
+        max_tokens:  int   = 0,
         temperature: float = DEFAULT_TEMP,
         top_p:       float = DEFAULT_TOP_P,
         stream_cb:   Optional[Callable[[str], None]] = None,
@@ -864,6 +953,11 @@ class LlamaCppModel:
         """
         if self._backend == "none":
             raise RuntimeError("No model loaded. Call load() first.")
+
+        # Adaptive max_tokens from memory profile
+        if max_tokens == 0:
+            profile = get_memory_profile()
+            max_tokens = profile.get("max_tokens", self.DEFAULT_MAX_TOK)
 
         # Wrap stream_cb with the thinking-token filter
         filtered_cb = None
