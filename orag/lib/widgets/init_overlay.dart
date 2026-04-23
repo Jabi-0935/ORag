@@ -266,21 +266,15 @@ class _InitOverlayState extends State<InitOverlay>
         .trim();
   }
 
-  /// Primary status text — uses the backend message when available,
-  /// otherwise shows a clean default. Avoids redundant "Loading" + "Loading…"
   String get _statusText {
     final msg = _sanitizeMsg(widget.status.message);
 
     switch (widget.status.state) {
       case InitState.idle:
-        return 'Preparing AI engine…';
-      case InitState.downloading:
-        // Use the backend message directly (e.g. "Downloading Chat Model… 45%")
-        return msg.isNotEmpty ? msg : 'Downloading…';
       case InitState.loading:
-        // Use the backend message but prevent "Loading" title + "Loading…" message
-        if (msg.isNotEmpty) return msg;
-        return 'Starting AI engine…';
+        return 'Preparing the AI engine…';
+      case InitState.downloading:
+        return msg.isNotEmpty ? msg : 'Downloading…';
       case InitState.ready:
         return 'Ready to chat!';
       case InitState.error:
@@ -293,13 +287,11 @@ class _InitOverlayState extends State<InitOverlay>
   String get _hintText {
     switch (widget.status.state) {
       case InitState.idle:
-        return 'This may take a moment';
-      case InitState.downloading:
-        return 'First launch only · stay on Network! ';
       case InitState.loading:
-        return 'Almost there…';
       case InitState.ready:
         return '';
+      case InitState.downloading:
+        return 'First launch only · stay on Network! ';
       case InitState.error:
         return 'Please check your connection and try again';
     }

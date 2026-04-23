@@ -125,6 +125,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           horizontal: 16, vertical: 12),
                       children: [
                         _buildResourceMonitorSection(),
+                        const SizedBox(height: 16),
+                        _buildAboutSection(),
                         const SizedBox(height: 40),
                       ],
                     ),
@@ -317,6 +319,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
 
+
+  Widget _buildAboutSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader('Developers', Icons.code_rounded, AppColors.textSecondary),
+        _buildCard(children: [
+          _buildRow('Names', 'ismeel, rashmitha, suchitha mokshagna'),
+        ]),
+      ],
+    );
+  }
 
   String _capitalize(String s) {
     if (s.isEmpty) return s;
