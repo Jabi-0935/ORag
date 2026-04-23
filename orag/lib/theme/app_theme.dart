@@ -8,9 +8,9 @@ class AppColors {
   AppColors._();
 
   // Core backgrounds
-  static const Color background = Color(0xFF0A0E1A);
-  static const Color surface = Color(0xFF131829);
-  static const Color surfaceLight = Color(0xFF1A2040);
+  static const Color background = Color(0xFF010212);
+  static const Color surface = Color(0xFF07081A);
+  static const Color surfaceLight = Color(0xFF0E1126);
 
   // Accents
   static const Color primary = Color(0xFF00D4AA);
