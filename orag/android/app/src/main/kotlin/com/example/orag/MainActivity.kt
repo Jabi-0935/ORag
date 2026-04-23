@@ -23,6 +23,23 @@ class MainActivity : FlutterActivity() {
 	@Volatile
 	private var initSink: EventChannel.EventSink? = null
 
+	// Cache the last init progress event so we can replay it when
+	// a new EventChannel listener attaches (survives stream reconnections).
+	@Volatile
+	private var lastInitJson: String? = null
+
+	// Track whether init has been started (to avoid re-triggering)
+	@Volatile
+	private var initStarted: Boolean = false
+
+	// Cached status for non-blocking getStatus calls
+	@Volatile
+	private var cachedStatus: HashMap<String, Any?> = hashMapOf(
+		"state" to "idle",
+		"progress" to 0.0,
+		"message" to "Preparing AI engine…"
+	)
+
 	/**
 	 * Called from Python (via Chaquopy invoke) for each generated token.
 	 * Forwards the token to the Flutter EventChannel sink on the UI thread.
@@ -36,8 +53,21 @@ class MainActivity : FlutterActivity() {
 	/**
 	 * Called from Python (via Chaquopy invoke) for init progress events.
 	 * Forwards JSON string to the Flutter init EventChannel sink.
+	 * Also caches the event and updates cachedStatus for polling fallback.
 	 */
 	fun onInitProgress(jsonData: String) {
+		lastInitJson = jsonData
+		// Update cached status from the JSON
+		try {
+			val parsed = org.json.JSONObject(jsonData)
+			val newStatus = HashMap<String, Any?>()
+			newStatus["state"] = parsed.optString("state", "idle")
+			newStatus["progress"] = parsed.optDouble("progress", 0.0)
+			newStatus["message"] = parsed.optString("message", "")
+			cachedStatus = newStatus
+		} catch (e: Exception) {
+			Log.w("ORAG", "Failed to parse init JSON for cache", e)
+		}
 		runOnUiThread {
 			initSink?.success(jsonData)
 		}
@@ -89,15 +119,24 @@ class MainActivity : FlutterActivity() {
 			})
 
 		// --- EventChannel for init progress ---
+		// When a new listener attaches, immediately replay the last cached
+		// progress event so the UI doesn't get stuck on "Preparing…".
 		EventChannel(flutterEngine.dartExecutor.binaryMessenger, INIT_CHANNEL)
 			.setStreamHandler(object : EventChannel.StreamHandler {
 				override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
 					initSink = events
 					Log.d("ORAG", "Init progress listener attached")
+					// Replay last known event immediately
+					val cached = lastInitJson
+					if (cached != null) {
+						Log.d("ORAG", "Replaying cached init event: $cached")
+						events?.success(cached)
+					}
 				}
 				override fun onCancel(arguments: Any?) {
-					initSink = null
-					Log.d("ORAG", "Init progress listener cancelled")
+					// Do NOT null out initSink — keep forwarding events even
+					// if Flutter temporarily disconnects the stream.
+					Log.d("ORAG", "Init progress listener cancelled (sink kept)")
 				}
 			})
 
@@ -123,10 +162,10 @@ class MainActivity : FlutterActivity() {
 							}
 							Log.i("ORAG", "Python init completed: $modelPath")
 						} catch (e: Exception) {
-							// Emit error via init channel too
+							// Route error through onInitProgress to update cached status
 							val errorJson = """{"state":"error","progress":1.0,"message":"${e.message?.replace("\"", "\\\"") ?: "Unknown error"}"}"""
+							onInitProgress(errorJson)
 							runOnUiThread {
-								initSink?.success(errorJson)
 								result.error("ERROR", e.message, null)
 							}
 							Log.e("ORAG", "Python init failed", e)
@@ -134,32 +173,10 @@ class MainActivity : FlutterActivity() {
 					}.start()
 
 				} else if (call.method == "getStatus") {
-					Thread {
-						try {
-							val api = ensureApiModule()
-							val statusObj = api.callAttr("get_status")
-
-							// Convert Python dict to Kotlin Map
-							val statusMap = HashMap<String, Any?>()
-							val pyDict = statusObj.asMap()
-							for ((key, value) in pyDict) {
-								val k = key.toString()
-								when (k) {
-									"state" -> statusMap[k] = value.toString()
-									"progress" -> statusMap[k] = value.toDouble()
-									"message" -> statusMap[k] = value.toString()
-								}
-							}
-
-							runOnUiThread {
-								result.success(statusMap)
-							}
-						} catch (e: Exception) {
-							runOnUiThread {
-								result.error("ERROR", e.message, null)
-							}
-						}
-					}.start()
+					// Non-blocking: return the cached status from onInitProgress
+					// instead of calling into Python (which would deadlock on
+					// the init lock if init_with_progress is still running).
+					result.success(HashMap(cachedStatus))
 
 				} else if (call.method == "chatStream") {
 					val query = call.argument<String>("query") ?: ""

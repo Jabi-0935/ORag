@@ -72,12 +72,16 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           if (mounted) {
             setState(() {
               _initStatus = status;
-              if (status.isReady) _initDone = true;
+              if (status.isReady) {
+                _initDone = true;
+                _isInitializing = false;
+              }
             });
           }
         },
         onDone: () {
           _isInitializing = false;
+          // If stream ended without reaching ready, poll briefly
           if (!_initDone && mounted) {
             _pollStatus();
           }
@@ -109,8 +113,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  /// Short polling loop as a last resort. getStatus is now non-blocking
+  /// on Android (returns cached Kotlin-level state), so this won't deadlock.
   Future<void> _pollStatus() async {
-    for (var i = 0; i < 60; i++) {
+    for (var i = 0; i < 120; i++) {
       if (_initDone || !mounted) return;
       final s = await _platform.getStatus();
       if (!mounted) return;
@@ -120,7 +126,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         return;
       }
       if (s.isError) return;
-      await Future.delayed(const Duration(seconds: 2));
+      await Future.delayed(const Duration(seconds: 3));
     }
   }
 

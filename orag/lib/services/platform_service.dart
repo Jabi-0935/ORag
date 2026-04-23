@@ -32,57 +32,78 @@ class PlatformService {
 
   /// Start Python + download models + load LLM.
   /// Returns a stream of [InitStatus] updates.
+  ///
+  /// Uses a dual approach: listens for push events via EventChannel AND
+  /// polls getStatus every 3s as a fallback. This ensures the UI
+  /// always reflects the current state, even if the EventChannel stream
+  /// temporarily disconnects (which happens on Android when
+  /// receiveBroadcastStream() resubscribes).
   Stream<InitStatus> initPython(String modelPath) {
-    // The init progress comes through a dedicated EventChannel.
-    // We trigger the init via MethodChannel, and listen for progress
-    // on the EventChannel.
     final controller = StreamController<InitStatus>();
+    bool finished = false;
 
-    // Listen to init progress events first
-    StreamSubscription? sub;
-    sub = _initChannel.receiveBroadcastStream().listen(
+    void finish() {
+      if (finished) return;
+      finished = true;
+      if (!controller.isClosed) controller.close();
+    }
+
+    void addStatus(InitStatus status) {
+      if (controller.isClosed) return;
+      controller.add(status);
+      if (status.isReady || status.isError) {
+        finish();
+      }
+    }
+
+    // 1. Listen to EventChannel push events
+    StreamSubscription? eventSub;
+    eventSub = _initChannel.receiveBroadcastStream().listen(
       (event) {
         try {
           final map = event is Map
               ? event.cast<String, dynamic>()
               : jsonDecode(event.toString()) as Map<String, dynamic>;
-          final state = _parseState(map['state'] as String? ?? 'idle');
-          final progress = (map['progress'] as num?)?.toDouble() ?? 0.0;
-          final message = map['message'] as String? ?? '';
-          controller.add(InitStatus(
-            state: state,
-            progress: progress,
-            message: message,
+          addStatus(InitStatus(
+            state: _parseState(map['state'] as String? ?? 'idle'),
+            progress: (map['progress'] as num?)?.toDouble() ?? 0.0,
+            message: map['message'] as String? ?? '',
           ));
-          if (state == InitState.ready || state == InitState.error) {
-            sub?.cancel();
-            controller.close();
-          }
-        } catch (e) {
-          // Ignore malformed events
-        }
+        } catch (_) {}
       },
-      onError: (error) {
-        controller.add(InitStatus(
-          state: InitState.error,
-          progress: 1.0,
-          message: 'Init stream error: $error',
-        ));
-        controller.close();
+      onError: (_) {
+        // EventChannel stream error — don't treat as fatal,
+        // the polling fallback will keep the UI updated.
+      },
+      onDone: () {
+        // EventChannel stream ended — polling fallback will take over.
       },
     );
 
-    // Trigger init (fire-and-forget — progress comes via EventChannel)
+    // 2. Trigger init (fire-and-forget — progress comes via EventChannel)
     _method.invokeMethod('initPython', {'model_path': modelPath}).catchError(
       (e) {
-        controller.add(InitStatus(
+        addStatus(InitStatus(
           state: InitState.error,
           progress: 1.0,
           message: 'Init failed: $e',
         ));
-        if (!controller.isClosed) controller.close();
       },
     );
+
+    // 3. Polling fallback: every 3 seconds, check cached status
+    //    This is non-blocking on Android (returns cached Kotlin-level state).
+    Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (finished) {
+        timer.cancel();
+        eventSub?.cancel();
+        return;
+      }
+      getStatus().then((status) {
+        if (finished) return;
+        addStatus(status);
+      }).catchError((_) {});
+    });
 
     return controller.stream;
   }
