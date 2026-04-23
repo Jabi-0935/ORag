@@ -144,6 +144,7 @@ class _InitOverlayState extends State<InitOverlay>
                         ),
                       ),
                     ),
+                  ],
                 ],
               ),
             ],
