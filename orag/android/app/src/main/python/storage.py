@@ -241,7 +241,7 @@ def insert_chunks(doc_id: int, chunks: List[dict]) -> List[int]:
     chunks: list of dicts with keys:
         chunk_idx, text, tokens (list[str]), tfidf_vec (dict),
         parent_chunk_idx (int, optional)
-    Returns list of inserted chunk IDs (for image association).
+    Returns list of inserted chunk IDs.
     """
     rows = [
         (

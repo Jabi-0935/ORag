@@ -158,7 +158,6 @@ def ingest_document(
     """
     Ingest a .txt or .pdf file synchronously.
     Starts Nomic server lazily on first call.
-    Extracts images from PDFs and associates them with chunks.
 
     The document row is only updated with the chunk count AFTER all
     chunks are fully processed and inserted, so the UI never shows
@@ -335,7 +334,7 @@ def ask(
     Run a RAG query synchronously.
     Retrieves top-4 chunks for better context coverage.
     Returns (success, answer, sources) where sources is a list of dicts:
-      [{"doc_name": "...", "chunk_text": "...", "score": 0.85, "images": [...]}, ...]
+      [{"doc_name": "...", "chunk_text": "...", "score": 0.85}, ...]
     """
     sources = []
     try:
@@ -390,7 +389,6 @@ def ask(
                         "doc_name": doc_name,
                         "chunk_text": text[:200],  # Preview only
                         "score": round(score, 3),
-                        "images": [],
                     })
 
                 print("[RAG] Generation started...")

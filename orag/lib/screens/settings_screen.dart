@@ -305,6 +305,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildResourceMonitorSection() {
     final appMem = (_resources['app_memory_mb'] as num?)?.toDouble() ?? 0.0;
+    final availMem = (_resources['available_ram_mb'] as num?)?.toDouble() ?? 0.0;
+    final profile = _resources['profile_name'] as String? ?? 'Unknown';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -312,7 +314,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _buildSectionHeader(
             'Resource Monitor', Icons.monitor_heart_rounded, const Color(0xFF6C5CE7)),
         _buildCard(children: [
-          _buildRow('App Memory (RSS)', '${appMem.toStringAsFixed(0)} MB'),
+          _buildRow('Device Profile', profile),
+          _divider(),
+          _buildRow('Total Memory Used', '${appMem.toStringAsFixed(0)} MB'),
+          _divider(),
+          _buildRow('Available RAM', '${availMem.toStringAsFixed(0)} MB'),
         ]),
       ],
     );

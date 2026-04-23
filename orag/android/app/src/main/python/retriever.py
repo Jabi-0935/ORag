@@ -170,11 +170,8 @@ class HybridRetriever:
                 ensure_nomic_server(nomic_path)
             except Exception as e:
                 print(f"[retriever] Nomic lazy-start skipped: {e}")
-            # Compute dense embeddings in background — doesn't block the UI
-            threading.Thread(
-                target=self._compute_embeddings,
-                daemon=True,
-            ).start()
+            # Compute dense embeddings synchronously to prevent concurrent execution with Qwen
+            self._compute_embeddings()
         else:
             self._avg_dl = 1.0
 
@@ -428,7 +425,7 @@ class HybridRetriever:
     def get_chunk_ids_for_results(
         self, results: list[tuple[str, float, int]]
     ) -> list[int]:
-        """Map RAG query results back to chunk IDs for image lookup.
+        """Map RAG query results back to chunk IDs.
         Uses O(1) text index for fast matching.
         """
         chunk_ids = []

@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -188,143 +187,7 @@ class _ChatBubbleState extends State<ChatBubble> {
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          isUser ? _userText() : _aiMarkdown(),
-          // Inline image thumbnails for AI messages with images
-          if (!isUser && widget.message.hasImages) ...[
-            const SizedBox(height: 10),
-            _imageStrip(),
-          ],
-        ],
-      ),
-    );
-  }
-
-  /// Horizontal scrollable strip of image thumbnails from RAG sources.
-  Widget _imageStrip() {
-    return SizedBox(
-      height: 90,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: widget.message.images.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, i) {
-          final img = widget.message.images[i];
-          return _buildThumbnail(img);
-        },
-      ),
-    );
-  }
-
-  /// A single tappable image thumbnail.
-  Widget _buildThumbnail(SourceImage img) {
-    return GestureDetector(
-      onTap: () => _showFullImage(context, img),
-      child: Container(
-        width: 90,
-        height: 90,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.divider, width: 1),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: _buildImageWidget(img.path),
-      ),
-    );
-  }
-
-  /// Builds correct image widget: Image.file for local paths, Image.network for URLs.
-  Widget _buildImageWidget(String path) {
-    if (path.startsWith('/')) {
-      final file = File(path);
-      return Image.file(
-        file,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => Container(
-          color: AppColors.surface,
-          child: const Center(
-            child: Icon(Icons.broken_image_outlined,
-                size: 24, color: AppColors.textDim),
-          ),
-        ),
-      );
-    }
-    return Image.network(
-      path,
-      fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) => Container(
-        color: AppColors.surface,
-        child: const Center(
-          child: Icon(Icons.broken_image_outlined,
-              size: 24, color: AppColors.textDim),
-        ),
-      ),
-    );
-  }
-
-  /// Full-screen image preview dialog.
-  void _showFullImage(BuildContext ctx, SourceImage img) {
-    showDialog(
-      context: ctx,
-      builder: (dialogCtx) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.all(16),
-        child: Stack(
-          children: [
-            // The image
-            Center(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: InteractiveViewer(
-                  child: img.path.startsWith('/')
-                      ? Image.file(
-                          File(img.path),
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, __, ___) => _brokenImagePlaceholder(),
-                        )
-                      : Image.network(
-                          img.path,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, __, ___) => _brokenImagePlaceholder(),
-                        ),
-                ),
-              ),
-            ),
-            // Close button
-            Positioned(
-              top: 0,
-              right: 0,
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.white, size: 28),
-                onPressed: () => Navigator.of(dialogCtx).pop(),
-              ),
-            ),
-            // Page label
-            if (img.page > 0)
-              Positioned(
-                bottom: 12,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      'Page ${img.page}',
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
+      child: isUser ? _userText() : _aiMarkdown(),
     );
   }
 
@@ -446,18 +309,6 @@ class _ChatBubbleState extends State<ChatBubble> {
           color: AppColors.primary,
           decoration: TextDecoration.underline,
         ),
-      ),
-    );
-  }
-
-  Widget _brokenImagePlaceholder() {
-    return Container(
-      width: 200,
-      height: 200,
-      color: AppColors.surface,
-      child: const Center(
-        child: Icon(Icons.broken_image_outlined,
-            size: 48, color: AppColors.textDim),
       ),
     );
   }

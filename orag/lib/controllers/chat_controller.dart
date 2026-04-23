@@ -326,13 +326,6 @@ class ChatController extends Notifier<ChatState> {
           aiMsg.sources =
               srcList.map((m) => SourceAttribution.fromJson(m)).toList();
 
-          // Copy images from sources into the message for inline rendering
-          final allImages = <SourceImage>[];
-          for (final src in aiMsg.sources) {
-            allImages.addAll(src.images);
-          }
-          aiMsg.images = allImages;
-
           // Grab the text answer if no tokens were streamed
           if (aiMsg.isEmpty) {
             final answer = resultData['answer'] as String?;

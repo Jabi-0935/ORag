@@ -88,6 +88,31 @@ def get_app_vss_mb() -> float:
     return 0.0
 
 
+def get_subprocess_memory_mb() -> float:
+    """Get the RSS of all child processes (llama-server) by reading /proc."""
+    total_mb = 0.0
+    try:
+        my_pid = str(os.getpid())
+        for pid_dir in os.listdir("/proc"):
+            if pid_dir.isdigit():
+                try:
+                    with open(f"/proc/{pid_dir}/stat", "r") as f:
+                        stat = f.read().split()
+                        # stat[3] is ppid
+                        if len(stat) > 3 and stat[3] == my_pid:
+                            with open(f"/proc/{pid_dir}/status", "r") as sf:
+                                for line in sf:
+                                    if line.startswith("VmRSS:"):
+                                        kb = int(line.split()[1])
+                                        total_mb += kb / 1024.0
+                                        break
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return total_mb
+
+
 # ------------------------------------------------------------------ #
 #  Battery Info                                                        #
 # ------------------------------------------------------------------ #
@@ -400,14 +425,10 @@ def get_resource_report() -> dict:
     profile = get_profile()
     total_ram = profile["total_ram_gb"]
     app_rss = get_app_memory_mb()
+    sub_rss = get_subprocess_memory_mb()
+    total_app_memory = app_rss + sub_rss
     available = get_available_ram_mb()
     battery = get_battery_info()
-
-    # Calculate memory pressure percentage
-    if total_ram > 0:
-        used_pct = ((total_ram * 1024) - available) / (total_ram * 1024) * 100
-    else:
-        used_pct = 0.0
 
     return {
         # Profile
@@ -424,9 +445,8 @@ def get_resource_report() -> dict:
         "embed_chunk_limit": profile["embed_chunk_limit"],
 
         # Live memory
-        "app_memory_mb": round(app_rss, 1),
+        "app_memory_mb": round(total_app_memory, 1),
         "available_ram_mb": round(available, 1),
-        "memory_pressure_pct": round(used_pct, 1),
 
         # Battery
         "battery_level": battery["level"],
