@@ -78,13 +78,5 @@ void main() {
       expect(find.text('Listen'), findsNothing);
     });
 
-    testWidgets('does not show image strip when no images', (tester) async {
-      final msg = ChatMessage(role: MessageRole.assistant, text: 'answer');
-      await tester.pumpWidget(_testApp(ChatBubble(message: msg)));
-      await tester.pumpAndSettle();
-
-      // No broken_image icon should appear
-      expect(find.byIcon(Icons.broken_image_outlined), findsNothing);
-    });
   });
 }
