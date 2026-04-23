@@ -1137,9 +1137,9 @@ def build_rag_prompt(context_chunks: list[str], question: str) -> str:
         "You are a precise document assistant. "
         "Answer the question using ONLY the provided context. "
         "Look carefully for names, titles, authors, dates, and specific facts. "
-        "If the question asks about authorship, look for phrases like "
-        "'written by', 'author', 'by [Name]', or title page information. "
-        "Provide a clear, complete answer of 2-4 sentences. "
+        "The context chunks will include their source document name like [Source: filename]. "
+        "If you use information from multiple documents, explicitly mention which document you are drawing the conclusion from (e.g. 'Based on document A... and based on document B...'). "
+        "Provide a clear, complete answer. "
         "If the answer is not in the context, say \"I don't know based on the provided documents.\" "
         "Do NOT make up information. Do NOT repeat the question."
     )

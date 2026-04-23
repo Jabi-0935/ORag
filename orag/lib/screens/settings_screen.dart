@@ -263,6 +263,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildActionRow(String label, IconData icon, Color color, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: color),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.textSecondary.withValues(alpha: 0.5)),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _statusDot(bool active) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -319,6 +345,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _buildRow('Total Memory Used', '${appMem.toStringAsFixed(0)} MB'),
           _divider(),
           _buildRow('Available RAM', '${availMem.toStringAsFixed(0)} MB'),
+          _divider(),
+          _buildActionRow('Clear Knowledge Base', Icons.delete_sweep_rounded, AppColors.error, _clearDocs),
+          _divider(),
+          _buildActionRow('Clear Conversation History', Icons.clear_all_rounded, const Color(0xFFFF7675), _clearChat),
         ]),
       ],
     );

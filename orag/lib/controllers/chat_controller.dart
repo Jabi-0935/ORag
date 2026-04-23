@@ -371,18 +371,16 @@ class ChatController extends Notifier<ChatState> {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf', 'txt'],
+      allowMultiple: true,
     );
     if (result == null || result.files.isEmpty) return;
 
-    final path = result.files.single.path;
-    if (path == null) return;
-
-    final fileName = path.split('/').last.split('\\').last;
-    final tempMsg = ChatMessage(role: MessageRole.system, text: 'Uploading $fileName…');
+    final fileNames = result.files.map((f) => f.name).join(', ');
+    final tempMsg = ChatMessage(role: MessageRole.system, text: 'Uploading $fileNames…');
 
     state = state.copyWith(
       isUploading: true, 
-      uploadStatus: 'Reading file…',
+      uploadStatus: 'Reading files…',
       messages: [...state.messages, tempMsg],
     );
 
@@ -391,32 +389,43 @@ class ChatController extends Notifier<ChatState> {
       const Duration(seconds: 1),
       (i) => i,
     ).listen((_) {
-      tempMsg.text = 'Processing $fileName… ${stopwatch.elapsed.inSeconds}s';
+      tempMsg.text = 'Processing $fileNames… ${stopwatch.elapsed.inSeconds}s';
       state = state.copyWith(
         uploadStatus: 'Processing… ${stopwatch.elapsed.inSeconds}s',
         messages: List.of(state.messages),
       );
     });
 
-    final response = await _platform.uploadDocument(path);
+    bool allSuccess = true;
+    String lastMessage = '';
+
+    for (var file in result.files) {
+      if (file.path == null) continue;
+      final response = await _platform.uploadDocument(file.path!);
+      if (response['success'] != true) {
+        allSuccess = false;
+        lastMessage = response['message'] as String? ?? 'Failed to upload ${file.name}';
+        break; // Stop on first error
+      }
+    }
+
     statusTimer.cancel();
     stopwatch.stop();
-    final success = response['success'] == true;
-    final message = response['message'] as String? ?? '';
 
     final finalMessages = state.messages.where((m) => m != tempMsg).toList();
 
     state = state.copyWith(
       isUploading: false,
       uploadStatus: '',
-      errorBanner: success ? null : 'Upload failed: $message',
-      clearError: success,
+      errorBanner: allSuccess ? null : 'Upload failed: $lastMessage',
+      clearError: allSuccess,
       messages: finalMessages,
     );
 
     // Auto-switch to RAG mode with a system message
-    if (success) {
-      _enterRagMode(docName: fileName);
+    if (allSuccess) {
+      final docName = result.files.length == 1 ? result.files.first.name : '${result.files.length} documents';
+      _enterRagMode(docName: docName);
     }
   }
 

@@ -363,14 +363,7 @@ def ask(
                 print("[RAG] No relevant context found")
                 result = (False, "No relevant context found.", [])
             else:
-                context_chunks = [text for text, _, _ in results]
-                for i, (text, score, doc_id) in enumerate(results):
-                    print(f"[RAG] Chunk {i}: score={score:.3f}, doc_id={doc_id}, text={text[:80]}...")
-
-                prompt = build_rag_prompt(context_chunks, question)
-                print(f"[RAG] Prompt length: {len(prompt)} chars")
-
-                # Build source metadata
+                # Build source metadata early so we can inject it into the prompt
                 doc_name_cache = {}
                 try:
                     docs = storage_list_documents()
@@ -378,6 +371,16 @@ def ask(
                         doc_name_cache[d["id"]] = d["name"]
                 except Exception:
                     pass
+
+                context_chunks = []
+                for i, (text, score, doc_id) in enumerate(results):
+                    print(f"[RAG] Chunk {i}: score={score:.3f}, doc_id={doc_id}, text={text[:80]}...")
+                    doc_name = doc_name_cache.get(doc_id, f"Document #{doc_id}")
+                    context_chunks.append(f"[Source: {doc_name}]\n{text}")
+
+                prompt = build_rag_prompt(context_chunks, question)
+                print(f"[RAG] Prompt length: {len(prompt)} chars")
+
 
                 seen_doc_names = set()
                 for text, score, doc_id in results:
