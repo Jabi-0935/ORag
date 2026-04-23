@@ -174,10 +174,10 @@ def init_with_progress(model_path, progress_callback):
             qwen_path = downloader.model_dest_path(downloader.QWEN_MODEL["filename"])
 
             if not pipeline.runtime.is_loaded():
-                _emit_progress("loading", 0.05, "[LOAD] Initializing inference engine…")
+                _emit_progress("loading", 0.05, "[LOAD] Preparing the AI engine…")
 
                 def on_load_progress(frac, text):
-                    msg = f"[LOAD] {text}" if text else "[LOAD] Warming up…"
+                    msg = f"[LOAD] {text}" if text else "[LOAD] Preparing the AI engine…"
                     _emit_progress("loading", frac, msg)
 
                 pipeline.runtime.load(qwen_path, on_progress=on_load_progress)

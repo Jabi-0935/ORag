@@ -256,7 +256,7 @@ def _wait_for_server(port: int, timeout: int = 120,
         if on_tick and elapsed - last_tick >= 1.0:
             last_tick = elapsed
             pct = min(elapsed / timeout, 0.95)
-            on_tick(pct, f"Starting AI engine\u2026 {int(elapsed)}s")
+            on_tick(pct, "Preparing the AI engine\u2026")
         time.sleep(1.0)
     return False
 
@@ -436,7 +436,7 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
         print(f"  Model: {Path(model_path).name}")
         print("  Loading model into memory, please wait ...")
         if on_progress:
-            on_progress(0.02, f"Starting AI engine\u2026 ({Path(model_path).name})")
+            on_progress(0.02, f"Preparing the AI engine\u2026")
 
         try:
             _LLAMASERVER_PROC = _launch_binary(cmd)
