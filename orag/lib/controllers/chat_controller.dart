@@ -185,11 +185,8 @@ class ChatController extends Notifier<ChatState> {
 
   void _enterRagMode({String? docName}) {
     state = state.copyWith(ragMode: true, activeDocumentName: docName);
-    final label = docName != null ? '"$docName"' : 'your document';
-    _addSystemMessage(
-      '📄 Document mode activated — $label has been loaded.\n'
-      'Ask questions about it below. Type **quit** to return to AI Chat.',
-    );
+    final label = docName ?? 'Document';
+    _addSystemMessage('📄 $label type quit to go ai chat');
   }
 
   void _addSystemMessage(String text) {
