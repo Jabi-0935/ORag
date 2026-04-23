@@ -38,12 +38,12 @@ void main() {
       expect(find.byIcon(Icons.person_rounded), findsOneWidget);
     });
 
-    testWidgets('shows AI avatar icon', (tester) async {
+    testWidgets('shows AI avatar image', (tester) async {
       final msg = ChatMessage(role: MessageRole.assistant, text: 'test');
       await tester.pumpWidget(_testApp(ChatBubble(message: msg)));
       await tester.pumpAndSettle();
 
-      expect(find.byIcon(Icons.auto_awesome_rounded), findsOneWidget);
+      expect(find.byType(Image), findsOneWidget);
     });
 
     testWidgets('shows TTS button for non-streaming AI messages', (tester) async {
