@@ -9,8 +9,8 @@ Central module that:
   5. Dynamically downgrades profile under memory pressure
 
 Profiles:
-  ULTRA_LOW (<=3GB):  ctx=512,  max_tok=256, 2 threads, Nomic ctx=128
-  LOW       (<=4GB):  ctx=512,  max_tok=384, 2-4 threads, Nomic ctx=256
+  ULTRA_LOW (<=3GB):  ctx=256,  max_tok=128, 1-2 threads, Nomic ctx=64
+  LOW       (<=4GB):  ctx=384,  max_tok=256, 2 threads, Nomic ctx=128
   MEDIUM    (<=6GB):  ctx=1024, max_tok=512, auto threads, Nomic ctx=384
   HIGH      (>6GB):   ctx=2048, max_tok=512, auto threads, Nomic ctx=512
 """
@@ -183,8 +183,8 @@ def _compute_profile() -> dict:
         return {
             "profile": "LOW",
             "total_ram_gb": 0.0,
-            "n_ctx": 512,
-            "max_tokens": 384,
+            "n_ctx": 384,
+            "max_tokens": 256,
             "n_threads": 2,
             "nomic_ctx": 128,
             "nomic_lazy": True,
@@ -198,10 +198,10 @@ def _compute_profile() -> dict:
         return {
             "profile": "ULTRA_LOW",
             "total_ram_gb": total,
-            "n_ctx": 512,
-            "max_tokens": 256,
+            "n_ctx": 256,
+            "max_tokens": 128,
             "n_threads": 2,
-            "nomic_ctx": 128,
+            "nomic_ctx": 64,
             "nomic_lazy": True,        # Lazy: start Nomic only on first RAG query
             "embed_chunk_limit": 15,   # Embed only top 15 chunks
             "kv_cache_type": "q4_0",
@@ -213,10 +213,10 @@ def _compute_profile() -> dict:
         return {
             "profile": "LOW",
             "total_ram_gb": total,
-            "n_ctx": 512,
-            "max_tokens": 384,
-            "n_threads": max(2, min(4, optimal_threads())),
-            "nomic_ctx": 256,
+            "n_ctx": 384,
+            "max_tokens": 256,
+            "n_threads": 2,
+            "nomic_ctx": 128,
             "nomic_lazy": True,
             "embed_chunk_limit": 25,
             "kv_cache_type": "q4_0",
@@ -289,8 +289,8 @@ def check_memory_pressure() -> dict:
     mutated — this returns a copy with overrides.
 
     Thresholds:
-      < 200 MB free → EMERGENCY: ctx=256, max_tok=128
-      < 400 MB free → WARNING:   cap ctx=512, max_tok=256
+      < 200 MB free → EMERGENCY: ctx=128, max_tok=64
+      < 400 MB free → WARNING:   cap ctx=256, max_tok=128
       >= 400 MB     → use base profile unchanged
     """
     global _LAST_PRESSURE_CHECK
@@ -313,13 +313,13 @@ def check_memory_pressure() -> dict:
         import gc
         gc.collect()
         adjusted = dict(profile)
-        adjusted["n_ctx"] = 256
-        adjusted["max_tokens"] = 128
-        adjusted["embed_chunk_limit"] = 10
+        adjusted["n_ctx"] = 128
+        adjusted["max_tokens"] = 64
+        adjusted["embed_chunk_limit"] = 5
         adjusted["batch_size"] = 32
         adjusted["_pressure"] = "EMERGENCY"
         print(f"[memory] EMERGENCY pressure: {available:.0f} MB free — "
-              f"downgraded to ctx=256, max_tok=128")
+              f"downgraded to ctx=128, max_tok=64")
         return adjusted
 
     if available < 400:
@@ -327,9 +327,9 @@ def check_memory_pressure() -> dict:
         import gc
         gc.collect()
         adjusted = dict(profile)
-        adjusted["n_ctx"] = min(profile["n_ctx"], 512)
-        adjusted["max_tokens"] = min(profile["max_tokens"], 256)
-        adjusted["embed_chunk_limit"] = min(profile["embed_chunk_limit"], 20)
+        adjusted["n_ctx"] = min(profile["n_ctx"], 256)
+        adjusted["max_tokens"] = min(profile["max_tokens"], 128)
+        adjusted["embed_chunk_limit"] = min(profile["embed_chunk_limit"], 15)
         adjusted["_pressure"] = "WARNING"
         print(f"[memory] WARNING pressure: {available:.0f} MB free — "
               f"capped ctx={adjusted['n_ctx']}, max_tok={adjusted['max_tokens']}")
