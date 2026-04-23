@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'theme/app_theme.dart';
-import 'screens/splash_screen.dart';
+import 'screens/chat_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,7 +14,7 @@ void main() {
 
   // Replace Flutter's red error screen with a dark one that matches the app
   ErrorWidget.builder = (FlutterErrorDetails details) {
-    return Container(color: const Color(0xFF040123));
+    return Container(color: const Color(0xFF010212));
   };
 
   // Lock to portrait for consistent mobile UX
@@ -25,7 +25,7 @@ void main() {
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
-    systemNavigationBarColor: Color(0xFF040123),
+    systemNavigationBarColor: Color(0xFF010212),
     systemNavigationBarIconBrightness: Brightness.light,
   ));
   runApp(const ProviderScope(child: OragApp()));
@@ -40,7 +40,7 @@ class OragApp extends StatelessWidget {
       title: 'O-RAG',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.dark,
-      home: const SplashScreen(),
+      home: const ChatScreen(),
     );
   }
 }
