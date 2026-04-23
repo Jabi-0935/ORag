@@ -20,21 +20,6 @@ MAX_TURNS = 5
 _progress_callback = None
 _progress_lock = threading.Lock()
 
-def _log_init(msg):
-    """Write diagnostic info to a log file in the app private directory."""
-    try:
-        from llm import _android_private_dir
-        priv = _android_private_dir()
-        if not priv:
-            return
-        log_path = os.path.join(priv, "api_init.log")
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}] {msg}\n")
-    except Exception:
-        pass
-
-
 def _set_progress_callback(cb):
     global _progress_callback
     with _progress_lock:
@@ -128,35 +113,26 @@ def init_with_progress(model_path, progress_callback):
 
         try:
             import gc
-            # IMMEDIATE progress before any heavy imports
             _emit_progress("downloading", 0.01, "[BOOTSTRAP] Initializing Python runtime…")
-            _log_init("Starting init_with_progress Stage 0 (v3)")
             
             # Step 0: Imports (Deferred)
-            _log_init("Importing modules...")
             import pipeline as pipe_mod
             import downloader as dl_mod
             from runtime import bootstrap as bs_mod
             pipeline = pipe_mod
             downloader = dl_mod
             bootstrap = bs_mod
-            _log_init("Imports successful.")
 
             _emit_progress("downloading", 0.05, "[SYS] Configuring storage layer…")
 
             if model_path:
                 downloader.set_model_dir(model_path)
-                _log_init(f"Model dir set: {model_path}")
 
             from storage import init_db
-            _log_init("Initializing database...")
             init_db()
-            _log_init("Reloading retriever...")
             pipeline.retriever.reload()
-            _log_init("Stage 0/1 done")
 
             # Step 1: Download models (with progress)
-            _log_init("Stage 2: Sequential downloads starting")
             download_done = threading.Event()
             download_error = [None]
 
@@ -164,7 +140,6 @@ def init_with_progress(model_path, progress_callback):
                 _emit_progress("downloading", frac, f"[DL] {text}")
 
             def on_download_done(success, message):
-                _log_init(f"Download callback: success={success}, msg={message}")
                 if not success:
                     download_error[0] = message
                 download_done.set()
@@ -175,7 +150,6 @@ def init_with_progress(model_path, progress_callback):
             )
 
             # Wait for download to complete (sequential)
-            _log_init("auto_download_default finished.")
             gc.collect() 
 
             if download_error[0]:
@@ -183,11 +157,9 @@ def init_with_progress(model_path, progress_callback):
                 return
 
             # Step 2: Load model (with progress)
-            _log_init("Stage 3: Model loading starting")
             qwen_path = downloader.model_dest_path(downloader.QWEN_MODEL["filename"])
 
             if not pipeline.runtime.is_loaded():
-                _log_init(f"Loading Qwen model from: {qwen_path}")
                 _emit_progress("loading", 0.05, "[LOAD] Initializing inference engine…")
 
                 def on_load_progress(frac, text):
@@ -195,27 +167,20 @@ def init_with_progress(model_path, progress_callback):
                     _emit_progress("loading", frac, msg)
 
                 pipeline.runtime.load(qwen_path, on_progress=on_load_progress)
-                _log_init("Qwen model loaded successfully.")
 
             # Step 3: Start embedding engine for RAG semantic search
             from downloader import NOMIC_MODEL
             nomic_path = downloader.model_dest_path(NOMIC_MODEL["filename"])
             from runtime.model_runtime import LlamaModelRuntime
             if os.path.isfile(nomic_path) and isinstance(pipeline.runtime, LlamaModelRuntime):
-                _log_init(f"Starting Nomic server from: {nomic_path}")
                 _emit_progress("loading", 0.95, "[LOAD] Starting semantic index…")
                 pipeline.runtime.start_nomic_server_if_needed(nomic_path)
-                _log_init("Nomic server ready.")
 
             _initialized = True
-            _log_init("Initialization complete.")
-            _emit_progress("ready", 1.0, "[READY] System online.")
+            _emit_progress("ready", 1.0, "Ready to chat!")
 
         except BaseException as e:
             msg = f"Fatal Error: {type(e).__name__}: {e}"
-            _log_init(msg)
-            import traceback
-            _log_init(traceback.format_exc())
             _emit_progress("error", 1.0, f"[CRITICAL] {msg}")
             # Do NOT re-raise, let the UI handle the error state
 
@@ -244,31 +209,7 @@ def get_status():
 
 
 def get_init_logs():
-    """Return content of api_init.log and llama_server.log for debugging."""
-    from llm import _android_private_dir
-    priv = _android_private_dir()
-    if not priv:
-        return "Private directory not accessible."
-    
-    out = "--- API INIT LOG ---\n"
-    api_log = os.path.join(priv, "api_init.log")
-    if os.path.isfile(api_log):
-        with open(api_log, "r", encoding="utf-8", errors="replace") as f:
-            out += f.read()
-    else:
-        out += "Not found.\n"
-        
-    out += "\n--- LLAMA SERVER LOG ---\n"
-    srv_log = os.path.join(priv, "llama_server.log")
-    if os.path.isfile(srv_log):
-        with open(srv_log, "r", encoding="utf-8", errors="replace") as f:
-            # Only tail of server log
-            f.seek(max(0, os.path.getsize(srv_log) - 2000))
-            out += f.read()
-    else:
-        out += "Not found.\n"
-        
-    return out
+    return "Diagnostic logs are no longer available in production mode."
 
 
 def chat(query):

@@ -141,15 +141,6 @@ def _bin_dir() -> Path:
 def _ensure_android_binary() -> Optional[str]:
     """
     Android-specific: locate the bundled ARM64 llama-server binary.
-
-    The binary is bundled as lib/arm64-v8a/llama-server.so (or legacy
-    libllama_server.so) in the APK.
-    Android's package installer extracts all .so files from lib/<abi>/ to
-    the app's nativeLibraryDir at install time with correct SELinux labels
-    that allow execve() â€” the ONLY reliable way to run native code on
-    modern Android (code_cache / data dirs block exec via SELinux).
-
-    No runtime extraction needed â€” just find the pre-installed path.
     """
     global _ANDROID_EXE_PATH, _ANDROID_BINARY_ERROR
     if _ANDROID_EXE_PATH is not None:
@@ -158,62 +149,27 @@ def _ensure_android_binary() -> Optional[str]:
     if not _is_android():
         return None
 
-    priv = _android_private_dir()
-    dbg: list[str] = [f"ANDROID_PRIVATE={priv}"]
-    print(f"[llama-server] _is_android()=True, priv={priv}")
-
     # Primary: use path injected from Kotlin (most reliable)
     native_lib_dir: Optional[str] = _ANDROID_NATIVE_LIB_DIR
-    if native_lib_dir:
-        dbg.append(f"nativeLibraryDir (from Kotlin)={native_lib_dir}")
-    else:
-        # Fallback: try mActivity (may not work in Flutter threading context)
+    if not native_lib_dir:
         try:
             from android import mActivity  # type: ignore
             native_lib_dir = str(mActivity.getApplicationInfo().nativeLibraryDir)
-            dbg.append(f"nativeLibraryDir (from mActivity)={native_lib_dir}")
-        except Exception as e:
-            dbg.append(f"getApplicationInfo failed: {e}")
+        except Exception:
+            pass
 
     if native_lib_dir:
         candidates = ["llama-server.so", "libllama_server.so"]
         for name in candidates:
             exe = os.path.join(native_lib_dir, name)
-            dbg.append(f"checking {exe}")
             if os.path.isfile(exe):
-                sz = os.path.getsize(exe)
-                dbg.append(f"FOUND: {name} ({sz // 1024} KB)")
-                print(f"[llama-server] native lib: {exe} ({sz // 1024} KB)")
-                try:
-                    Path(priv, "llama_debug.txt").write_text("\n".join(dbg))
-                except Exception:
-                    pass
                 _ANDROID_EXE_PATH = exe
                 return exe
 
-        # List what IS in nativeLibraryDir so we can diagnose wrong names
-        try:
-            present = os.listdir(native_lib_dir)
-            dbg.append(f"NOT FOUND. nativeLibraryDir contains: {present}")
-            _ANDROID_BINARY_ERROR = (
-                f"No llama server binary found in {native_lib_dir}.\n"
-                f"Expected one of: {candidates}\n"
-                f"Directory contains: {present}"
-            )
-        except Exception as le:
-            dbg.append(f"listdir failed: {le}")
-            _ANDROID_BINARY_ERROR = (
-                f"No llama server binary found in {native_lib_dir} "
-                f"(listdir failed: {le})"
-            )
+        _ANDROID_BINARY_ERROR = f"No llama server binary found in {native_lib_dir}."
     else:
         _ANDROID_BINARY_ERROR = "Could not determine nativeLibraryDir"
 
-    try:
-        Path(priv, "llama_debug.txt").write_text("\n".join(dbg))
-    except Exception:
-        pass
-    print(f"[llama-server] binary not found: {_ANDROID_BINARY_ERROR}")
     return None
 
 
@@ -330,7 +286,7 @@ def _prepare_android_env() -> dict:
     return env
 
 
-def _launch_binary(cmd: list, log_file=None, env: dict | None = None) -> subprocess.Popen:
+def _launch_binary(cmd: list, env: dict | None = None) -> subprocess.Popen:
     """Launch a native binary in a cross-platform way.
 
     On Android: ensures executable permissions, sets LD_LIBRARY_PATH, and tries
@@ -359,8 +315,8 @@ def _launch_binary(cmd: list, log_file=None, env: dict | None = None) -> subproc
         env = _prepare_android_env()
 
     kwargs = dict(
-        stdout=log_file if log_file else subprocess.DEVNULL,
-        stderr=log_file if log_file else subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         env=env,
     )
 
@@ -457,44 +413,20 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
         print("  Loading model into memory, please wait ...")
         if on_progress:
             on_progress(0.02, f"Starting AI engine\u2026 ({Path(model_path).name})")
-        log_file = None
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_path = os.path.join(priv, "llama_server.log")
-                log_file = open(log_path, "wb")
-            except Exception:
-                pass
+
         try:
-            _LLAMASERVER_PROC = _launch_binary(cmd, log_file=log_file)
+            _LLAMASERVER_PROC = _launch_binary(cmd)
         except Exception as exc:
-            if log_file:
-                log_file.close()
-            _ANDROID_BINARY_ERROR = f"Popen failed: {type(exc).__name__}: {exc}"
+            _ANDROID_BINARY_ERROR = f"Launch failed: {exc}"
             print(f"[llama-server] Launch failed: {exc}")
             return False
+
     ready = _wait_for_server(_LLAMASERVER_PORT, timeout=180, on_tick=on_progress)
     if not ready:
         _stop_llama_server()
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_path = os.path.join(priv, "llama_server.log")
-                if os.path.isfile(log_path):
-                    with open(log_path, "rb") as lf:
-                        lf.seek(max(0, os.path.getsize(log_path) - 1000))
-                        tail = lf.read().decode("utf-8", errors="replace")
-                    _ANDROID_BINARY_ERROR = f"Server log tail: {tail}"
-                    print(f"[llama-server] server log: {tail}")
-            except Exception:
-                pass
-        print("[llama-server] Timed out / crashed waiting for server.")
+        print("[llama-server] Timed out waiting for server.")
         return False
-    if log_file:
-        try:
-            log_file.close()
-        except Exception:
-            pass
+
     print("[llama-server] Server ready.")
     return True
 
@@ -532,31 +464,20 @@ def start_nomic_server(model_path: str,
         ]
         print(f"[nomic-server] Starting on port {_NOMIC_PORT}")
         print(f"  Model: {Path(model_path).name}")
-        log_file = None
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_file = open(os.path.join(priv, "nomic_server.log"), "wb")
-            except Exception:
-                pass
+
         try:
-            _NOMIC_PROC = _launch_binary(cmd, log_file=log_file)
+            _NOMIC_PROC = _launch_binary(cmd)
         except Exception as exc:
-            if log_file:
-                log_file.close()
             print(f"[nomic-server] Launch failed: {exc}")
             return False
     ready = _wait_for_server(_NOMIC_PORT, timeout=120)
-    if log_file:
-        try:
-            log_file.close()
-        except Exception:
-            pass
-    if ready:
-        print("[nomic-server] Ready.")
-    else:
+    if not ready:
+        _stop_nomic_server()
         print("[nomic-server] Timed out / crashed.")
-    return ready
+        return False
+
+    print("[nomic-server] Ready.")
+    return True
 
 
 def stop_nomic_server() -> None:

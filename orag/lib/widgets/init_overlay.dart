@@ -144,16 +144,6 @@ class _InitOverlayState extends State<InitOverlay>
                         ),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                  ],
-                  TextButton.icon(
-                    onPressed: () => _showLogs(context),
-                    icon: const Icon(Icons.assignment_outlined, size: 16),
-                    label: const Text('View Logs'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: AppColors.textDim,
-                    ),
-                  ),
                 ],
               ),
             ],
@@ -226,39 +216,7 @@ class _InitOverlayState extends State<InitOverlay>
     );
   }
 
-  void _showLogs(BuildContext context) async {
-    final logs = await PlatformService().getInitLogs();
-    if (!context.mounted) return;
 
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF040123),
-        title: Text(
-          'Diagnostic Logs',
-          style: GoogleFonts.inter(color: Colors.white),
-        ),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: Text(
-              logs,
-              style: GoogleFonts.firaCode(
-                color: AppColors.textPrimary,
-                fontSize: 10,
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildProgressBar() {
     final progress = widget.status.progress;
