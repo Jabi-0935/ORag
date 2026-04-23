@@ -49,6 +49,7 @@ def set_android_paths(native_lib_dir: str, files_dir: str) -> None:
     global _ANDROID_NATIVE_LIB_DIR, _ANDROID_FILES_DIR
     _ANDROID_NATIVE_LIB_DIR = native_lib_dir
     _ANDROID_FILES_DIR = files_dir
+    os.environ["ANDROID_PRIVATE"] = files_dir
     print(f"[llm] Android paths injected: native_lib={native_lib_dir}, files={files_dir}")
 
 

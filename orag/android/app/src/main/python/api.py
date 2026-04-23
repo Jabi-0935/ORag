@@ -211,10 +211,13 @@ def init_with_progress(model_path, progress_callback):
             _log_init("Initialization complete.")
             _emit_progress("ready", 1.0, "[READY] System online.")
 
-        except Exception as e:
-            _emit_progress("error", 1.0, f"Init failed: {e}")
-            _log_init(f"Init failed: {e}")
-            raise
+        except BaseException as e:
+            msg = f"Fatal Error: {type(e).__name__}: {e}"
+            _log_init(msg)
+            import traceback
+            _log_init(traceback.format_exc())
+            _emit_progress("error", 1.0, f"[CRITICAL] {msg}")
+            # Do NOT re-raise, let the UI handle the error state
 
 
 def get_status():
@@ -238,6 +241,34 @@ def get_status():
         }
     except Exception:
         return {"state": "idle", "progress": 0.0, "message": ""}
+
+
+def get_init_logs():
+    """Return content of api_init.log and llama_server.log for debugging."""
+    from llm import _android_private_dir
+    priv = _android_private_dir()
+    if not priv:
+        return "Private directory not accessible."
+    
+    out = "--- API INIT LOG ---\n"
+    api_log = os.path.join(priv, "api_init.log")
+    if os.path.isfile(api_log):
+        with open(api_log, "r", encoding="utf-8", errors="replace") as f:
+            out += f.read()
+    else:
+        out += "Not found.\n"
+        
+    out += "\n--- LLAMA SERVER LOG ---\n"
+    srv_log = os.path.join(priv, "llama_server.log")
+    if os.path.isfile(srv_log):
+        with open(srv_log, "r", encoding="utf-8", errors="replace") as f:
+            # Only tail of server log
+            f.seek(max(0, os.path.getsize(srv_log) - 2000))
+            out += f.read()
+    else:
+        out += "Not found.\n"
+        
+    return out
 
 
 def chat(query):

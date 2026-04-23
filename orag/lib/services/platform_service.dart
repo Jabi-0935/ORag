@@ -258,6 +258,18 @@ class PlatformService {
     }
   }
 
+  // ---- Diagnostics ----
+  
+  /// Get init logs for debugging.
+  Future<String> getInitLogs() async {
+    try {
+      final result = await _method.invokeMethod('getInitLogs');
+      return result.toString();
+    } catch (e) {
+      return 'Failed to fetch logs: $e';
+    }
+  }
+
   // ---- Helpers ----
 
   static InitState _parseState(String s) {

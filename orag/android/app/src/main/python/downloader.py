@@ -76,14 +76,12 @@ def set_model_dir(model_path: Optional[str]) -> None:
 
 
 def _android_external_models_dir():
-    try:
-        from android import mActivity  # type: ignore
-
-        ext_dir = mActivity.getExternalFilesDir(None)
-        if ext_dir is not None:
-            return os.path.join(str(ext_dir), "models")
-    except Exception:
-        pass
+    # In Flutter/Chaquopy, we rely on paths injected into os.environ
+    # rather than the unreliable android.mActivity bridge.
+    priv = os.environ.get("ANDROID_PRIVATE")
+    if priv:
+        # We assume models go into a 'models' subfolder of private files
+        return os.path.join(priv, "models")
     return None
 
 

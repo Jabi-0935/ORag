@@ -48,23 +48,25 @@ class MainActivity : FlutterActivity() {
 		synchronized(this) {
 			apiModule?.let { return it }
 			if (!Python.isStarted()) {
+				Log.i("ORAG", "Starting Python runtime...")
 				Python.start(AndroidPlatform(this))
+				Log.i("ORAG", "Python runtime started.")
 			}
 
 			// Inject Android paths into llm module before any init runs.
-			// mActivity is not accessible from Python in this Flutter/Chaquopy
-			// context, so we push nativeLibraryDir from Kotlin directly.
 			try {
 				val llm = Python.getInstance().getModule("llm")
 				val nativeLibDir = applicationInfo.nativeLibraryDir
 				val filesDir = filesDir.absolutePath
+				Log.i("ORAG", "Injecting paths: lib=$nativeLibDir, files=$filesDir")
 				llm.callAttr("set_android_paths", nativeLibDir, filesDir)
-				Log.i("ORAG", "Injected nativeLibraryDir=$nativeLibDir, filesDir=$filesDir")
 			} catch (e: Exception) {
 				Log.w("ORAG", "Failed to inject Android paths", e)
 			}
 
+			Log.i("ORAG", "Loading 'api' module...")
 			val module = Python.getInstance().getModule("api")
+			Log.i("ORAG", "'api' module loaded successfully.")
 			apiModule = module
 			return module
 		}
@@ -294,13 +296,23 @@ class MainActivity : FlutterActivity() {
 						}
 					}.start()
 
-					} else if (call.method == "getEngineHealth") {
+				} else if (call.method == "getEngineHealth") {
 					Thread {
 						try {
 							val response = ensureApiModule().callAttr("get_engine_health")
 							runOnUiThread { result.success(response.toString()) }
 						} catch (e: Exception) {
 							runOnUiThread { result.error("ERROR", e.message, null) }
+						}
+					}.start()
+
+				} else if (call.method == "getInitLogs") {
+					Thread {
+						try {
+							val response = ensureApiModule().callAttr("get_init_logs")
+							runOnUiThread { result.success(response.toString()) }
+						} catch (e: Exception) {
+							runOnUiThread { result.success("Failed to get logs: ${e.message}") }
 						}
 					}.start()
 
