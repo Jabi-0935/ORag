@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'theme/app_theme.dart';
@@ -27,7 +28,7 @@ void main() {
     systemNavigationBarColor: Color(0xFF040123),
     systemNavigationBarIconBrightness: Brightness.light,
   ));
-  runApp(const OragApp());
+  runApp(const ProviderScope(child: OragApp()));
 }
 
 class OragApp extends StatelessWidget {

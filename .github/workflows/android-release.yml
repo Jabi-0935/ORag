@@ -101,15 +101,8 @@ jobs:
         continue-on-error: true
 
       - name: 🧪 Run unit tests
-        # --no-pub skips a redundant pub-get; coverage only when tests exist.
-        # The `|| true` guard prevents failure on projects with no test files.
-        run: |
-          TEST_FILES=$(find test -name '*_test.dart' 2>/dev/null | wc -l)
-          if [ "$TEST_FILES" -gt "0" ]; then
-            flutter test --no-pub --coverage
-          else
-            echo "ℹ️  No test files found — skipping flutter test"
-          fi
+        # Hard gate — tests must pass before build proceeds.
+        run: flutter test --no-pub --coverage
 
       - name: 📊 Upload coverage report
         uses: actions/upload-artifact@v4

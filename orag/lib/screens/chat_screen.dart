@@ -1,8 +1,7 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../models/chat_message.dart';
+import '../controllers/chat_controller.dart';
 import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_bubble.dart';
@@ -13,270 +12,59 @@ import 'settings_screen.dart';
 import '../widgets/source_card.dart';
 import '../widgets/typing_indicator.dart';
 
-class ChatScreen extends StatefulWidget {
+class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
 
   @override
-  State<ChatScreen> createState() => _ChatScreenState();
+  ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
-  final PlatformService _platform = PlatformService();
+class _ChatScreenState extends ConsumerState<ChatScreen>
+    with TickerProviderStateMixin {
   final TextEditingController _controller = TextEditingController();
-  InitStatus _initStatus = const InitStatus();
-  bool _isInitializing = false;
   final ScrollController _scrollController = ScrollController();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-
-  final List<ChatMessage> _messages = [];
-  bool _isGenerating = false;
-  bool _ragMode = false; // false = Chat, true = RAG
-  StreamSubscription<String>? _chatSub;
-
-  // Init state
-  bool _initDone = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _startInit());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(chatControllerProvider.notifier).startInit();
+    });
   }
 
   @override
   void dispose() {
-    _chatSub?.cancel();
     _scrollController.dispose();
     _controller.dispose();
     super.dispose();
   }
 
-  // ---- Init flow ----
-
-  Future<void> _startInit() async {
-    if (_isInitializing) return;
-    _isInitializing = true;
-
-    setState(() {
-      _initStatus = const InitStatus(
-        state: InitState.idle,
-        message: 'Preparing the AI engine…',
-      );
-      _initDone = false;
-    });
-
-    try {
-      final modelPath = (await getExternalStorageDirectory())?.path;
-
-      _platform.initPython(modelPath ?? '').listen(
-        (status) {
-          if (mounted) {
-            setState(() {
-              _initStatus = status;
-              if (status.isReady) {
-                _initDone = true;
-                _isInitializing = false;
-              }
-            });
-          }
-        },
-        onDone: () {
-          _isInitializing = false;
-          // If stream ended without reaching ready, poll briefly
-          if (!_initDone && mounted) {
-            _pollStatus();
-          }
-        },
-        onError: (e) {
-          _isInitializing = false;
-          if (mounted) {
-            setState(() {
-              _initStatus = InitStatus(
-                state: InitState.error,
-                progress: 1.0,
-                message: 'Initialization failed: $e',
-              );
-            });
-          }
-        },
-      );
-    } catch (e) {
-      _isInitializing = false;
-      if (mounted) {
-        setState(() {
-          _initStatus = InitStatus(
-            state: InitState.error,
-            progress: 1.0,
-            message: 'Failed to start: $e',
-          );
-        });
-      }
-    }
-  }
-
-  /// Short polling loop as a last resort. getStatus is now non-blocking
-  /// on Android (returns cached Kotlin-level state), so this won't deadlock.
-  Future<void> _pollStatus() async {
-    for (var i = 0; i < 120; i++) {
-      if (_initDone || !mounted) return;
-      final s = await _platform.getStatus();
-      if (!mounted) return;
-      setState(() => _initStatus = s);
-      if (s.isReady) {
-        setState(() => _initDone = true);
-        return;
-      }
-      if (s.isError) return;
-      await Future.delayed(const Duration(seconds: 3));
-    }
-  }
-
-  // ---- Chat / RAG ----
+  // ---- Actions ----
 
   void _sendMessage() {
-    if (_isGenerating || !_initDone) return;
     final text = _controller.text.trim();
     if (text.isEmpty) return;
-
     _controller.clear();
-
-    if (_ragMode) {
-      _sendRagQuery(text);
-    } else {
-      _sendChatQuery(text);
-    }
-  }
-
-  void _sendChatQuery(String text) {
-    final userMsg = ChatMessage(role: MessageRole.user, text: text);
-    final aiMsg = ChatMessage(
-      role: MessageRole.assistant,
-      text: '',
-      isStreaming: true,
-    );
-
-    setState(() {
-      _messages.add(userMsg);
-      _messages.add(aiMsg);
-      _isGenerating = true;
-    });
+    ref.read(chatControllerProvider.notifier).submitQuery(text);
     _scrollToBottom();
-
-    _chatSub?.cancel();
-    _chatSub = _platform.chatStream(text).listen(
-      (token) {
-        if (!mounted) return;
-        setState(() => aiMsg.text += token);
-        _scrollToBottom();
-      },
-      onError: (error) {
-        if (!mounted) return;
-        setState(() {
-          aiMsg.text += '\n⚠️ Error: $error';
-          aiMsg.isStreaming = false;
-          _isGenerating = false;
-        });
-      },
-      onDone: () {
-        if (!mounted) return;
-        setState(() {
-          if (aiMsg.isEmpty) aiMsg.text = '(empty response)';
-          aiMsg.isStreaming = false;
-          _isGenerating = false;
-        });
-      },
-    );
-  }
-
-  void _sendRagQuery(String text) {
-    final userMsg = ChatMessage(role: MessageRole.user, text: text);
-    final aiMsg = ChatMessage(
-      role: MessageRole.assistant,
-      text: '',
-      isStreaming: true,
-    );
-
-    setState(() {
-      _messages.add(userMsg);
-      _messages.add(aiMsg);
-      _isGenerating = true;
-    });
-    _scrollToBottom();
-
-    final rag = _platform.ragStream(text);
-
-    _chatSub?.cancel();
-    _chatSub = rag.tokens.listen(
-      (token) {
-        if (!mounted) return;
-        setState(() => aiMsg.text += token);
-        _scrollToBottom();
-      },
-      onError: (error) {
-        if (!mounted) return;
-        setState(() {
-          aiMsg.text += '\n⚠️ Error: $error';
-          aiMsg.isStreaming = false;
-          _isGenerating = false;
-        });
-      },
-      onDone: () async {
-        if (!mounted) return;
-
-        // Once tokens are done, get sources from the future
-        try {
-          final resultData = await rag.result;
-          if (mounted) {
-            setState(() {
-              final srcList = (resultData['sources'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-              aiMsg.sources = srcList
-                  .map((m) => SourceAttribution.fromJson(m))
-                  .toList();
-                  
-              // Grab the text answer if no tokens were streamed
-              if (aiMsg.isEmpty) {
-                 final answer = resultData['answer'] as String?;
-                 if (answer != null && answer.isNotEmpty) {
-                    aiMsg.text = answer.startsWith('ERROR:') ? '⚠️ $answer' : answer;
-                 }
-              }
-            });
-          }
-        } catch (_) {}
-
-        if (mounted) {
-          setState(() {
-            if (aiMsg.isEmpty) aiMsg.text = '(empty response)';
-            aiMsg.isStreaming = false;
-            _isGenerating = false;
-          });
-        }
-      },
-    );
   }
 
   Future<void> _stopGeneration() async {
-    await _platform.stop();
+    await ref.read(chatControllerProvider.notifier).stopGeneration();
   }
 
   Future<void> _clearMemory() async {
-    try {
-      await _platform.clearMemory();
-      setState(() => _messages.clear());
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to clear: $e')),
-        );
-      }
-    }
+    await ref.read(chatControllerProvider.notifier).clearMemory();
   }
 
   void _openSettings() {
+    final ctrl = ref.read(chatControllerProvider.notifier);
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => SettingsScreen(
-          platform: _platform,
+          platform: ctrl.platform,
           onClearChat: _clearMemory,
         ),
       ),
@@ -299,22 +87,53 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    final chatState = ref.watch(chatControllerProvider);
+
+    // Auto-scroll when messages update during streaming
+    if (chatState.isGenerating) {
+      _scrollToBottom();
+    }
+
+    // Show error banner via SnackBar (non-destructive)
+    ref.listen<ChatState>(chatControllerProvider, (prev, next) {
+      if (next.errorBanner != null && next.errorBanner != prev?.errorBanner) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(next.errorBanner!),
+            backgroundColor: AppColors.error,
+            action: SnackBarAction(
+              label: 'Dismiss',
+              textColor: Colors.white,
+              onPressed: () {
+                ref.read(chatControllerProvider.notifier).dismissError();
+              },
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    });
+
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: const Color(0xFF040123),
-      endDrawer: _initDone ? DocumentDrawer(platform: _platform) : null,
+      endDrawer: chatState.initDone
+          ? DocumentDrawer(
+              platform:
+                  ref.read(chatControllerProvider.notifier).platform)
+          : null,
       body: Stack(
         children: [
           // Main chat UI — only built after init completes
-          if (_initDone)
+          if (chatState.initDone)
             Column(
               children: [
-                _buildAppBar(),
-                Expanded(child: _buildMessageList()),
+                _buildAppBar(chatState),
+                Expanded(child: _buildMessageList(chatState)),
                 ChatInputBar(
                   controller: _controller,
-                  enabled: _initDone,
-                  isGenerating: _isGenerating,
+                  enabled: chatState.initDone,
+                  isGenerating: chatState.isGenerating,
                   onSend: _sendMessage,
                   onStop: _stopGeneration,
                 ),
@@ -322,11 +141,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             ),
 
           // Init overlay — covers the entire screen
-          if (!_initDone)
+          if (!chatState.initDone)
             Positioned.fill(
               child: InitOverlay(
-                status: _initStatus,
-                onRetry: _startInit,
+                status: chatState.initStatus,
+                onRetry: () {
+                  ref.read(chatControllerProvider.notifier).startInit();
+                },
               ),
             ),
         ],
@@ -334,7 +155,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildAppBar() {
+  Widget _buildAppBar(ChatState chatState) {
     return Container(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + 8,
@@ -378,7 +199,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   ),
                 ),
                 Text(
-                  _ragMode ? 'Document Q&A Mode' : 'Chat Mode',
+                  chatState.ragMode ? 'Document Q&A Mode' : 'Chat Mode',
                   style: const TextStyle(
                     color: AppColors.textDim,
                     fontSize: 12,
@@ -389,7 +210,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           ),
 
           // RAG toggle
-          _buildModeToggle(),
+          _buildModeToggle(chatState),
 
           // Documents button
           IconButton(
@@ -412,21 +233,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildModeToggle() {
+  Widget _buildModeToggle(ChatState chatState) {
     return GestureDetector(
-      onTap: _isGenerating
+      onTap: chatState.isGenerating
           ? null
-          : () => setState(() => _ragMode = !_ragMode),
+          : () => ref.read(chatControllerProvider.notifier).toggleRagMode(),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 250),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: _ragMode
+          color: chatState.ragMode
               ? AppColors.secondary.withValues(alpha: 0.15)
               : AppColors.primary.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: _ragMode
+            color: chatState.ragMode
                 ? AppColors.secondary.withValues(alpha: 0.3)
                 : AppColors.primary.withValues(alpha: 0.2),
             width: 1,
@@ -436,15 +257,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              _ragMode ? Icons.description_rounded : Icons.chat_rounded,
+              chatState.ragMode
+                  ? Icons.description_rounded
+                  : Icons.chat_rounded,
               size: 14,
-              color: _ragMode ? AppColors.secondary : AppColors.primary,
+              color: chatState.ragMode
+                  ? AppColors.secondary
+                  : AppColors.primary,
             ),
             const SizedBox(width: 4),
             Text(
-              _ragMode ? 'RAG' : 'Chat',
+              chatState.ragMode ? 'RAG' : 'Chat',
               style: TextStyle(
-                color: _ragMode ? AppColors.secondary : AppColors.primary,
+                color: chatState.ragMode
+                    ? AppColors.secondary
+                    : AppColors.primary,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),
@@ -455,17 +282,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildMessageList() {
-    if (_messages.isEmpty && _initDone) {
-      return _buildEmptyState();
+  Widget _buildMessageList(ChatState chatState) {
+    if (chatState.messages.isEmpty && chatState.initDone) {
+      return _buildEmptyState(chatState);
     }
 
     return ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(vertical: 12),
-      itemCount: _messages.length,
+      itemCount: chatState.messages.length,
       itemBuilder: (context, index) {
-        final msg = _messages[index];
+        final msg = chatState.messages[index];
 
         // If this is the AI message and it's streaming but empty, show typing indicator
         if (msg.isAssistant && msg.isStreaming && msg.isEmpty) {
@@ -485,7 +312,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildEmptyState() {
+  Widget _buildEmptyState(ChatState chatState) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -498,8 +325,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: (_ragMode ? AppColors.secondary : AppColors.primary)
-                      .withValues(alpha: 0.15),
+                  color:
+                      (chatState.ragMode ? AppColors.secondary : AppColors.primary)
+                          .withValues(alpha: 0.15),
                   blurRadius: 30,
                   spreadRadius: 5,
                 ),
@@ -519,7 +347,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           ),
           const SizedBox(height: 20),
           Text(
-            _ragMode ? 'Ask about your documents' : 'Ask me anything',
+            chatState.ragMode
+                ? 'Ask about your documents'
+                : 'Ask me anything',
             style: const TextStyle(
               color: AppColors.textPrimary,
               fontSize: 18,
@@ -528,7 +358,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           ),
           const SizedBox(height: 8),
           Text(
-            _ragMode
+            chatState.ragMode
                 ? 'Upload documents via 📁 then ask questions'
                 : 'Your offline AI assistant is ready',
             style: const TextStyle(

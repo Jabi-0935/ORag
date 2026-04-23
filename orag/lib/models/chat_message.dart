@@ -62,14 +62,19 @@ class ChatMessage {
   bool isStreaming;
   List<SourceAttribution> sources;
 
+  /// Images extracted from RAG source documents for inline rendering.
+  List<SourceImage> images;
+
   ChatMessage({
     required this.role,
     required this.text,
     DateTime? timestamp,
     this.isStreaming = false,
     List<SourceAttribution>? sources,
+    List<SourceImage>? images,
   })  : timestamp = timestamp ?? DateTime.now(),
-        sources = sources ?? [];
+        sources = sources ?? [],
+        images = images ?? [];
 
   bool get isUser => role == MessageRole.user;
   bool get isAssistant => role == MessageRole.assistant;
@@ -79,4 +84,7 @@ class ChatMessage {
 
   /// Whether this message has source attribution data.
   bool get hasSources => sources.isNotEmpty;
+
+  /// Whether this message has inline images to render.
+  bool get hasImages => images.isNotEmpty;
 }

@@ -12,7 +12,7 @@ from typing import Callable, Optional
 from config import QWEN_SERVER_PORT
 from runtime.bootstrap import BootstrapCoordinator
 from runtime.model_runtime import LlamaModelRuntime, ModelRuntime
-from chunker import process_document, extract_images_from_pdf
+from chunker import process_document, process_document_hierarchical, extract_images_from_pdf
 from downloader import NOMIC_MODEL, QWEN_MODEL, auto_download_default, model_dest_path, auto_download_default_sync, set_model_dir
 from llm import build_direct_prompt, build_rag_prompt
 from retriever import HybridRetriever
@@ -23,6 +23,7 @@ from storage import (
     insert_chunks,
     insert_chunk_images,
     insert_document,
+    insert_parent_chunks,
     get_images_for_chunks,
     list_documents as storage_list_documents,
     update_doc_chunk_count,
@@ -179,31 +180,39 @@ def ingest_document(
             return result
         print(f"[INGEST] Extracted {len(raw_text)} chars")
 
-        # Step 2: Chunk + compute TF-IDF vectors
-        raw_chunks = chunk_text(raw_text)
-        if not raw_chunks:
+        # Step 2: Chunk with Small-to-Big hierarchy + compute TF-IDF vectors
+        try:
+            small_chunks, parent_chunks = process_document_hierarchical(resolved)
+        except Exception:
+            # Fallback to flat chunking if hierarchical fails
+            from chunker import chunk_text, tokenise, compute_tfidf_vecs
+            raw_chunks = chunk_text(raw_text)
+            small_chunks = []
+            if raw_chunks:
+                token_lists = [tokenise(c) for c in raw_chunks]
+                tfidf_vecs, _ = compute_tfidf_vecs(token_lists)
+                for idx, (text, tokens, vec) in enumerate(
+                    zip(raw_chunks, token_lists, tfidf_vecs)
+                ):
+                    small_chunks.append({
+                        "chunk_idx": idx, "text": text,
+                        "tokens": tokens, "tfidf_vec": vec,
+                    })
+            parent_chunks = []
+
+        chunks = small_chunks
+        if not chunks:
             result = (False, f"Document '{name}' produced 0 chunks")
             if on_done:
                 on_done(*result)
             return result
+        print(f"[INGEST] {len(chunks)} small chunks + {len(parent_chunks)} parent chunks ready")
 
-        token_lists = [tokenise(c) for c in raw_chunks]
-        tfidf_vecs, _ = compute_tfidf_vecs(token_lists)
-        chunks = []
-        for idx, (text, tokens, vec) in enumerate(
-            zip(raw_chunks, token_lists, tfidf_vecs)
-        ):
-            chunks.append({
-                "chunk_idx": idx,
-                "text": text,
-                "tokens": tokens,
-                "tfidf_vec": vec,
-            })
-        print(f"[INGEST] {len(chunks)} chunks ready")
-
-        # Step 3: Insert document + chunks atomically
+        # Step 3: Insert document + chunks + parent chunks atomically
         doc_id = insert_document(name, resolved)
         chunk_ids = insert_chunks(doc_id, chunks)
+        if parent_chunks:
+            insert_parent_chunks(doc_id, parent_chunks)
         update_doc_chunk_count(doc_id, len(chunks))
         print(f"[INGEST] Saved {len(chunks)} chunks for doc_id={doc_id}")
 
@@ -385,7 +394,11 @@ def ask(
             result = (False, "No LLM model loaded. Please load a GGUF model first.", [])
         else:
             print(f"[RAG] Query: {question[:100]}")
-            results = retriever.query(question, top_k=4)
+            # Use Small-to-Big expansion: retrieve small chunks, expand to parent context
+            results = retriever.query_with_expansion(question, top_k=2)
+            if not results:
+                # Fallback to regular query without expansion
+                results = retriever.query(question, top_k=2)
             if not results:
                 print("[RAG] No relevant context found")
                 result = (False, "No relevant context found.", [])

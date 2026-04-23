@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Represents the current state of the model initialization pipeline.
@@ -69,11 +70,14 @@ class PlatformService {
             progress: (map['progress'] as num?)?.toDouble() ?? 0.0,
             message: map['message'] as String? ?? '',
           ));
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('[PlatformService] initPython event parse error: $e');
+        }
       },
-      onError: (_) {
+      onError: (e) {
         // EventChannel stream error — don't treat as fatal,
         // the polling fallback will keep the UI updated.
+        debugPrint('[PlatformService] initPython EventChannel error: $e');
       },
       onDone: () {
         // EventChannel stream ended — polling fallback will take over.
@@ -102,7 +106,9 @@ class PlatformService {
       getStatus().then((status) {
         if (finished) return;
         addStatus(status);
-      }).catchError((_) {});
+      }).catchError((e) {
+        debugPrint('[PlatformService] polling fallback error: $e');
+      });
     });
 
     return controller.stream;
@@ -120,7 +126,9 @@ class PlatformService {
           message: map['message'] as String? ?? '',
         );
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[PlatformService] getStatus error: $e');
+    }
     return const InitStatus();
   }
 
@@ -162,7 +170,9 @@ class PlatformService {
   Future<void> stop() async {
     try {
       await _method.invokeMethod('stop');
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[PlatformService] stop error: $e');
+    }
   }
 
   /// Clear conversation memory.
@@ -192,7 +202,8 @@ class PlatformService {
       final result = await _method.invokeMethod('listDocuments');
       final list = jsonDecode(result as String) as List;
       return list.cast<Map<String, dynamic>>();
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PlatformService] listDocuments error: $e');
       return [];
     }
   }
@@ -206,7 +217,8 @@ class PlatformService {
       );
       final json = jsonDecode(result as String) as Map<String, dynamic>;
       return json['success'] == true;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PlatformService] deleteDocument error: $e');
       return false;
     }
   }
@@ -217,7 +229,8 @@ class PlatformService {
       final result = await _method.invokeMethod('clearDocuments');
       final json = jsonDecode(result as String) as Map<String, dynamic>;
       return json['success'] == true;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PlatformService] clearDocuments error: $e');
       return false;
     }
   }
@@ -274,7 +287,8 @@ class PlatformService {
     try {
       final result = await _method.invokeMethod('getEngineHealth');
       return jsonDecode(result as String) as Map<String, dynamic>;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PlatformService] getEngineHealth error: $e');
       return {};
     }
   }
