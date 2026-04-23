@@ -122,7 +122,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
     return Scaffold(
       key: _scaffoldKey,
-      backgroundColor: const Color(0xFF040123),
+      backgroundColor: AppColors.background,
       body: Stack(
         children: [
           // Main chat UI — only built after init completes
@@ -337,9 +337,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                               color: AppColors.textSecondary, fontSize: 12)),
                       backgroundColor: AppColors.surface,
                       side: BorderSide(
-                          color: AppColors.primary.withValues(alpha: 0.2)),
+                          color: AppColors.primary.withValues(alpha: 0.3)),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(20)),
+                      elevation: 2,
+                      shadowColor: AppColors.primary.withValues(alpha: 0.2),
                       onPressed: () {
                         HapticFeedback.selectionClick();
                         _controller.text = suggestion;

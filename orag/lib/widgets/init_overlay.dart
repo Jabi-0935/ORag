@@ -48,7 +48,7 @@ class _InitOverlayState extends State<InitOverlay>
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: const Color(0xFF040123),
+      color: AppColors.background,
       child: SafeArea(
         child: Column(
           children: [

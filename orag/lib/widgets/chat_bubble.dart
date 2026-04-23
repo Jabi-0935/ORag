@@ -132,20 +132,34 @@ class _ChatBubbleState extends State<ChatBubble> {
 
   Widget _avatar(bool isUser) {
     return Container(
-      width: 30,
-      height: 30,
+      width: 32,
+      height: 32,
       margin: const EdgeInsets.only(top: 2),
       decoration: BoxDecoration(
         color: isUser
             ? AppColors.primary.withValues(alpha: 0.15)
-            : AppColors.secondary.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(10),
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        border: !isUser
+            ? Border.all(
+                color: AppColors.secondary.withValues(alpha: 0.3),
+                width: 1,
+              )
+            : null,
       ),
-      child: Icon(
-        isUser ? Icons.person_rounded : Icons.auto_awesome_rounded,
-        size: 16,
-        color: isUser ? AppColors.primary : AppColors.secondary,
-      ),
+      child: isUser
+          ? const Icon(
+              Icons.person_rounded,
+              size: 18,
+              color: AppColors.primary,
+            )
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(11),
+              child: Image.asset(
+                'assets/logo.png',
+                fit: BoxFit.cover,
+              ),
+            ),
     );
   }
 
@@ -166,6 +180,13 @@ class _ChatBubbleState extends State<ChatBubble> {
               : AppColors.divider,
           width: 1,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.15),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
