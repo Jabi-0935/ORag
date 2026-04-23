@@ -321,13 +321,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 
   Widget _buildAboutSection() {
+    const developers = ['Ismeel', 'Rashmitha', 'Suchitha', 'Mokshagna'];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildSectionHeader('Developers', Icons.code_rounded, AppColors.textSecondary),
-        _buildCard(children: [
-          _buildRow('Names', 'ismeel, rashmitha, suchitha mokshagna'),
-        ]),
+        _buildSectionHeader(
+            'Developers', Icons.people_alt_rounded, const Color(0xFF00B894)),
+        _buildCard(
+          children: [
+            for (int i = 0; i < developers.length; i++) ...[
+              if (i > 0) _divider(),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: AppColors.primary.withValues(alpha: 0.10),
+                      ),
+                      child: const Icon(Icons.person_rounded,
+                          size: 16, color: AppColors.primary),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      developers[i],
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
       ],
     );
   }
