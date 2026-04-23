@@ -131,13 +131,13 @@ class _SourceCardState extends State<SourceCard> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: AppColors.primary.withValues(alpha: 0.1),
+                            color: _relevanceColor(src.score).withValues(alpha: 0.1),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
-                            '${(src.score * 100).toInt()}%',
-                            style: const TextStyle(
-                              color: AppColors.primary,
+                            _relevanceLabel(src.score),
+                            style: TextStyle(
+                              color: _relevanceColor(src.score),
                               fontSize: 10,
                               fontWeight: FontWeight.w600,
                             ),
@@ -266,4 +266,19 @@ class _SourceCardState extends State<SourceCard> {
       ),
     );
   }
+}
+
+/// Relevance label from wRRF score (which are typically 0.001-0.05).
+String _relevanceLabel(double score) {
+  if (score >= 0.03) return 'High';
+  if (score >= 0.015) return 'Medium';
+  if (score >= 0.005) return 'Low';
+  return 'Weak';
+}
+
+Color _relevanceColor(double score) {
+  if (score >= 0.03) return AppColors.success;
+  if (score >= 0.015) return AppColors.primary;
+  if (score >= 0.005) return AppColors.warning;
+  return AppColors.textDim;
 }

@@ -188,12 +188,15 @@ class _InitOverlayState extends State<InitOverlay>
               ),
             ),
           // Logo
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
+          Container(
+            width: 76,
+            height: 76,
+            alignment: Alignment.center,
             child: Image.asset(
               'assets/logo.png',
               width: 76,
               height: 76,
+              fit: BoxFit.contain,
               errorBuilder: (_, __, ___) => const SizedBox(
                 width: 76,
                 height: 76,
@@ -250,10 +253,15 @@ class _InitOverlayState extends State<InitOverlay>
     );
   }
 
+  /// Cleans up developer brackets from backend messages (e.g., "[LOAD]", "[BOOTSTRAP]")
+  String _sanitizeMsg(String message) {
+    return message.replaceAll(RegExp(r'\[.*?\]\s*'), '').trim();
+  }
+
   /// Primary status text — uses the backend message when available,
   /// otherwise shows a clean default. Avoids redundant "Loading" + "Loading…"
   String get _statusText {
-    final msg = widget.status.message;
+    final msg = _sanitizeMsg(widget.status.message);
 
     switch (widget.status.state) {
       case InitState.idle:
@@ -268,7 +276,8 @@ class _InitOverlayState extends State<InitOverlay>
       case InitState.ready:
         return 'Ready to chat!';
       case InitState.error:
-        return msg.isNotEmpty ? msg : 'Could not initialize the AI engine.';
+        final errorMsg = _sanitizeMsg(widget.status.message);
+        return errorMsg.isNotEmpty ? errorMsg : 'Could not initialize the AI engine.';
     }
   }
 

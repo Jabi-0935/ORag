@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
 
 import '../models/chat_message.dart';
 import '../services/platform_service.dart';
@@ -15,14 +18,18 @@ class ChatState {
   final InitStatus initStatus;
   final bool initDone;
   final String? errorBanner; // non-destructive error display
+  final bool isUploading;
+  final String uploadStatus;
 
   const ChatState({
     this.messages = const [],
     this.isGenerating = false,
-    this.ragMode = false,
+    this.ragMode = true,
     this.initStatus = const InitStatus(),
     this.initDone = false,
     this.errorBanner,
+    this.isUploading = false,
+    this.uploadStatus = '',
   });
 
   ChatState copyWith({
@@ -33,6 +40,8 @@ class ChatState {
     bool? initDone,
     String? errorBanner,
     bool clearError = false,
+    bool? isUploading,
+    String? uploadStatus,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
@@ -41,6 +50,8 @@ class ChatState {
       initStatus: initStatus ?? this.initStatus,
       initDone: initDone ?? this.initDone,
       errorBanner: clearError ? null : (errorBanner ?? this.errorBanner),
+      isUploading: isUploading ?? this.isUploading,
+      uploadStatus: uploadStatus ?? this.uploadStatus,
     );
   }
 }
@@ -53,7 +64,14 @@ class ChatController extends Notifier<ChatState> {
   Timer? _initTimeoutTimer;
   bool _isInitializing = false;
 
+  // Token batching: accumulate tokens and flush every 50ms
+  // to reduce rebuilds from ~300 to ~20 per response
+  final StringBuffer _tokenBuffer = StringBuffer();
+  Timer? _tokenFlushTimer;
+  ChatMessage? _activeAiMsg;
+
   static const _initTimeoutDuration = Duration(minutes: 5);
+  static const _tokenFlushInterval = Duration(milliseconds: 50);
 
   PlatformService get platform => _platform;
 
@@ -62,6 +80,7 @@ class ChatController extends Notifier<ChatState> {
     ref.onDispose(() {
       _chatSub?.cancel();
       _initTimeoutTimer?.cancel();
+      _tokenFlushTimer?.cancel();
     });
     return const ChatState();
   }
@@ -91,6 +110,8 @@ class ChatController extends Notifier<ChatState> {
             state = state.copyWith(initDone: true);
             _isInitializing = false;
             _initTimeoutTimer?.cancel();
+            // Restore persisted messages after init
+            _loadPersistedMessages();
           }
         },
         onDone: () {
@@ -143,6 +164,30 @@ class ChatController extends Notifier<ChatState> {
     }
   }
 
+  // ---- Token batching ----
+
+  void _onToken(String token) {
+    _tokenBuffer.write(token);
+    _tokenFlushTimer?.cancel();
+    _tokenFlushTimer = Timer(_tokenFlushInterval, _flushTokens);
+  }
+
+  void _flushTokens() {
+    if (_tokenBuffer.isEmpty || _activeAiMsg == null) return;
+    _activeAiMsg!.text += _tokenBuffer.toString();
+    _tokenBuffer.clear();
+    state = state.copyWith(messages: List.of(state.messages));
+  }
+
+  void _finishTokenStream() {
+    _tokenFlushTimer?.cancel();
+    // Flush any remaining buffered tokens
+    if (_tokenBuffer.isNotEmpty && _activeAiMsg != null) {
+      _activeAiMsg!.text += _tokenBuffer.toString();
+      _tokenBuffer.clear();
+    }
+  }
+
   // ---- Unified query (Tasks 2.2 + 2.3) ----
 
   void submitQuery(String text) {
@@ -164,6 +209,7 @@ class ChatController extends Notifier<ChatState> {
       text: '',
       isStreaming: true,
     );
+    _activeAiMsg = aiMsg;
 
     final msgs = [...state.messages, userMsg, aiMsg];
     state = state.copyWith(
@@ -174,26 +220,28 @@ class ChatController extends Notifier<ChatState> {
 
     _chatSub?.cancel();
     _chatSub = _platform.chatStream(text).listen(
-      (token) {
-        aiMsg.text += token;
-        state = state.copyWith(messages: [...state.messages]);
-      },
+      _onToken,
       onError: (error) {
         debugPrint('[ChatController] chatStream error: $error');
+        _finishTokenStream();
         aiMsg.isStreaming = false;
+        _activeAiMsg = null;
         state = state.copyWith(
-          messages: [...state.messages],
+          messages: List.of(state.messages),
           isGenerating: false,
           errorBanner: 'Chat error: $error',
         );
       },
       onDone: () {
+        _finishTokenStream();
         if (aiMsg.isEmpty) aiMsg.text = '(empty response)';
         aiMsg.isStreaming = false;
+        _activeAiMsg = null;
         state = state.copyWith(
-          messages: [...state.messages],
+          messages: List.of(state.messages),
           isGenerating: false,
         );
+        _persistMessages();
       },
     );
   }
@@ -205,6 +253,7 @@ class ChatController extends Notifier<ChatState> {
       text: '',
       isStreaming: true,
     );
+    _activeAiMsg = aiMsg;
 
     final msgs = [...state.messages, userMsg, aiMsg];
     state = state.copyWith(
@@ -217,20 +266,20 @@ class ChatController extends Notifier<ChatState> {
 
     _chatSub?.cancel();
     _chatSub = rag.tokens.listen(
-      (token) {
-        aiMsg.text += token;
-        state = state.copyWith(messages: [...state.messages]);
-      },
+      _onToken,
       onError: (error) {
         debugPrint('[ChatController] ragStream error: $error');
+        _finishTokenStream();
         aiMsg.isStreaming = false;
+        _activeAiMsg = null;
         state = state.copyWith(
-          messages: [...state.messages],
+          messages: List.of(state.messages),
           isGenerating: false,
           errorBanner: 'RAG error: $error',
         );
       },
       onDone: () async {
+        _finishTokenStream();
         // Get sources from the future
         try {
           final resultData = await rag.result;
@@ -261,10 +310,12 @@ class ChatController extends Notifier<ChatState> {
 
         if (aiMsg.isEmpty) aiMsg.text = '(empty response)';
         aiMsg.isStreaming = false;
+        _activeAiMsg = null;
         state = state.copyWith(
-          messages: [...state.messages],
+          messages: List.of(state.messages),
           isGenerating: false,
         );
+        _persistMessages();
       },
     );
   }
@@ -279,14 +330,91 @@ class ChatController extends Notifier<ChatState> {
     try {
       await _platform.clearMemory();
       state = state.copyWith(messages: [], clearError: true);
+      _persistMessages();
     } catch (e) {
       debugPrint('[ChatController] clearMemory error: $e');
       state = state.copyWith(errorBanner: 'Failed to clear: $e');
     }
   }
 
+  Future<void> pickAndUploadFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'txt'],
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final path = result.files.single.path;
+    if (path == null) return;
+
+    state = state.copyWith(isUploading: true, uploadStatus: 'Reading file…');
+
+    final stopwatch = Stopwatch()..start();
+    final statusTimer = Stream.periodic(
+      const Duration(seconds: 2),
+      (i) => i,
+    ).listen((_) {
+      state = state.copyWith(uploadStatus: 'Processing… ${stopwatch.elapsed.inSeconds}s');
+    });
+
+    final response = await _platform.uploadDocument(path);
+    statusTimer.cancel();
+    stopwatch.stop();
+    final success = response['success'] == true;
+    final message = response['message'] as String? ?? '';
+
+    state = state.copyWith(
+      isUploading: false,
+      uploadStatus: '',
+      errorBanner: success ? null : 'Upload failed: $message',
+      ragMode: true,
+      clearError: success,
+    );
+  }
+
   void dismissError() {
     state = state.copyWith(clearError: true);
+  }
+
+  // ---- Persistence (Fix #22) ----
+
+  Future<File> get _persistFile async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/orag_messages.json');
+  }
+
+  Future<void> _persistMessages() async {
+    try {
+      final file = await _persistFile;
+      final nonStreaming = state.messages
+          .where((m) => !m.isStreaming)
+          .map((m) => m.toJson())
+          .toList();
+      // Keep only the last 100 messages to limit file size
+      final toSave = nonStreaming.length > 100
+          ? nonStreaming.sublist(nonStreaming.length - 100)
+          : nonStreaming;
+      await file.writeAsString(jsonEncode(toSave));
+    } catch (e) {
+      debugPrint('[ChatController] persist error: $e');
+    }
+  }
+
+  Future<void> _loadPersistedMessages() async {
+    try {
+      final file = await _persistFile;
+      if (!await file.exists()) return;
+      final raw = await file.readAsString();
+      final list = jsonDecode(raw) as List;
+      final messages = list
+          .map((j) => ChatMessage.fromJson(j as Map<String, dynamic>))
+          .toList();
+      if (messages.isNotEmpty) {
+        state = state.copyWith(messages: messages);
+      }
+    } catch (e) {
+      debugPrint('[ChatController] load persisted messages error: $e');
+    }
   }
 }
 

@@ -6,6 +6,7 @@ Central module that:
   2. Provides adaptive parameters for LLM context, threads, batch size
   3. Manages lazy Nomic server loading (deferred until first RAG query)
   4. Reports live memory/battery stats for the Settings UI
+  5. Dynamically downgrades profile under memory pressure
 
 Profiles:
   ULTRA_LOW (<=3GB):  ctx=512,  max_tok=256, 2 threads, Nomic ctx=128
@@ -248,6 +249,71 @@ def get_profile() -> dict:
 
 
 # ------------------------------------------------------------------ #
+#  Dynamic pressure-aware profile adjustment                           #
+# ------------------------------------------------------------------ #
+
+_LAST_PRESSURE_CHECK = 0.0
+_PRESSURE_CHECK_INTERVAL = 5.0   # seconds between checks
+
+
+def check_memory_pressure() -> dict:
+    """Check real-time memory pressure and return a (possibly downgraded) profile.
+
+    Called before generation to dynamically adjust parameters if the
+    device is running low on available RAM.  The base profile is never
+    mutated — this returns a copy with overrides.
+
+    Thresholds:
+      < 200 MB free → EMERGENCY: ctx=256, max_tok=128
+      < 400 MB free → WARNING:   cap ctx=512, max_tok=256
+      >= 400 MB     → use base profile unchanged
+    """
+    global _LAST_PRESSURE_CHECK
+
+    profile = get_profile()
+    now = time.monotonic()
+
+    # Throttle: don't read /proc/meminfo on every single call
+    if now - _LAST_PRESSURE_CHECK < _PRESSURE_CHECK_INTERVAL:
+        return profile
+
+    _LAST_PRESSURE_CHECK = now
+    available = get_available_ram_mb()
+
+    if available <= 0:
+        return profile  # Can't read — assume OK
+
+    if available < 200:
+        # EMERGENCY: device is about to OOM — force GC
+        import gc
+        gc.collect()
+        adjusted = dict(profile)
+        adjusted["n_ctx"] = 256
+        adjusted["max_tokens"] = 128
+        adjusted["embed_chunk_limit"] = 10
+        adjusted["batch_size"] = 32
+        adjusted["_pressure"] = "EMERGENCY"
+        print(f"[memory] EMERGENCY pressure: {available:.0f} MB free — "
+              f"downgraded to ctx=256, max_tok=128")
+        return adjusted
+
+    if available < 400:
+        # WARNING: reduce parameters + opportunistic GC
+        import gc
+        gc.collect()
+        adjusted = dict(profile)
+        adjusted["n_ctx"] = min(profile["n_ctx"], 512)
+        adjusted["max_tokens"] = min(profile["max_tokens"], 256)
+        adjusted["embed_chunk_limit"] = min(profile["embed_chunk_limit"], 20)
+        adjusted["_pressure"] = "WARNING"
+        print(f"[memory] WARNING pressure: {available:.0f} MB free — "
+              f"capped ctx={adjusted['n_ctx']}, max_tok={adjusted['max_tokens']}")
+        return adjusted
+
+    return profile
+
+
+# ------------------------------------------------------------------ #
 #  Lazy Nomic Server Manager                                           #
 # ------------------------------------------------------------------ #
 
@@ -295,6 +361,12 @@ def ensure_nomic_server(nomic_model_path: str) -> bool:
             return False
 
 
+def mark_nomic_stopped() -> None:
+    """Mark the Nomic server as stopped (called after intentional shutdown)."""
+    global _nomic_started
+    _nomic_started = False
+
+
 def is_nomic_running() -> bool:
     """Check if Nomic embedding server is currently alive."""
     try:
@@ -302,6 +374,13 @@ def is_nomic_running() -> bool:
         return probe_port(nomic_port())
     except Exception:
         return _nomic_started
+
+
+def should_stop_nomic_after_embedding() -> bool:
+    """On low-RAM profiles, recommend stopping Nomic after batch embedding
+    to reclaim ~140 MB of RAM for the LLM generation phase."""
+    profile = get_profile()
+    return profile["profile"] in ("ULTRA_LOW", "LOW")
 
 
 # ------------------------------------------------------------------ #

@@ -259,7 +259,6 @@ def _wait_for_server(port: int, timeout: int = 120,
             on_tick(pct, f"Starting AI engine\u2026 {int(elapsed)}s")
         time.sleep(1.0)
     return False
-    return False
 
 
 def _probe_port(port: int) -> bool:
@@ -518,6 +517,35 @@ def stop_nomic_server() -> None:
                 except Exception:
                     pass
             _NOMIC_PROC = None
+    # Notify memory_management that Nomic is stopped
+    try:
+        from memory_management import mark_nomic_stopped
+        mark_nomic_stopped()
+    except Exception:
+        pass
+
+
+def _nomic_server_available() -> Optional[int]:
+    """Return the Nomic port if the server is available, else None."""
+    if _NOMIC_PROC is not None and _NOMIC_PROC.poll() is None:
+        return _NOMIC_PORT
+    if _probe_port(_NOMIC_PORT):
+        return _NOMIC_PORT
+    return None
+
+
+def _parse_embedding_response(data) -> "list[float] | None":
+    """Parse embedding from llama-server response (handles multiple formats)."""
+    if isinstance(data, list):
+        emb = data[0].get("embedding") if data else None
+    else:
+        emb = data.get("embedding")
+    # Unwrap double-nested [[floats]] -> [floats]
+    if isinstance(emb, list) and emb and isinstance(emb[0], list):
+        emb = emb[0]
+    if isinstance(emb, list) and emb:
+        return emb
+    return None
 
 
 def get_embedding(text: str) -> "list[float] | None":
@@ -531,13 +559,8 @@ def get_embedding(text: str) -> "list[float] | None":
 
     Returns None if the Nomic server is not available.
     """
-    # ONLY use the dedicated Nomic embedding server
-    if _NOMIC_PROC is not None and _NOMIC_PROC.poll() is None:
-        port = _NOMIC_PORT
-    elif _probe_port(_NOMIC_PORT):
-        # Service-owned process on the Nomic port
-        port = _NOMIC_PORT
-    else:
+    port = _nomic_server_available()
+    if port is None:
         return None
     import urllib.request
     import urllib.error
@@ -549,23 +572,59 @@ def get_embedding(text: str) -> "list[float] | None":
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
-            # Newer llama-server: [{"index": 0, "embedding": [[float, ...]]}]
-            # Older llama-server: {"embedding": [float, ...]}
-            if isinstance(data, list):
-                emb = data[0].get("embedding") if data else None
-            else:
-                emb = data.get("embedding")
-            # Unwrap double-nested [[floats]] â†’ [floats]
-            if isinstance(emb, list) and emb and isinstance(emb[0], list):
-                emb = emb[0]
-            if isinstance(emb, list) and emb:
-                return emb
-            return None
+            return _parse_embedding_response(data)
     except Exception as e:
         print(f"[embedding] failed: {e}")
         return None
+
+
+def get_embeddings_batch(texts: list) -> "list[list[float] | None]":
+    """Batch embedding — sends multiple texts in one HTTP round-trip.
+
+    Falls back to serial get_embedding() if the batch endpoint is
+    unsupported by the running llama-server version.
+
+    Returns a list of embedding vectors (or None) in the same order.
+    """
+    if not texts:
+        return []
+    port = _nomic_server_available()
+    if port is None:
+        return [None] * len(texts)
+
+    import urllib.request
+    import urllib.error
+
+    # Try batch request first (newer llama-server supports array content)
+    try:
+        payload = json.dumps({"content": texts}).encode()
+        url = f"http://127.0.0.1:{port}/embedding"
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+            if isinstance(data, list) and len(data) == len(texts):
+                results = []
+                for item in data:
+                    emb = item.get("embedding") if isinstance(item, dict) else None
+                    if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                        emb = emb[0]
+                    results.append(emb if isinstance(emb, list) and emb else None)
+                return results
+            # Single-item fallback format
+            emb = _parse_embedding_response(data)
+            if emb and len(texts) == 1:
+                return [emb]
+    except Exception as e:
+        print(f"[embedding-batch] batch failed, falling back to serial: {e}")
+
+    # Fallback: serial embedding
+    return [get_embedding(t) for t in texts]
 
 
 def _stop_llama_server() -> None:
@@ -647,9 +706,9 @@ def _gen_via_server(
             if attempt == 1:
                 raise RuntimeError(f"llama-server unreachable: {e}") from e
         
-        # Give it a tiny bit of breathing room before second try
+        # Brief pause before retry (reduced from 1s for latency)
         import time
-        time.sleep(1)
+        time.sleep(0.3)
         
     return ""
 
@@ -896,9 +955,10 @@ class LlamaCppModel:
         if self._backend == "none":
             raise RuntimeError("No model loaded. Call load() first.")
 
-        # Adaptive max_tokens from memory profile
+        # Adaptive max_tokens from pressure-aware profile
         if max_tokens == 0:
-            profile = get_memory_profile()
+            from memory_management import check_memory_pressure
+            profile = check_memory_pressure()
             max_tokens = profile.get("max_tokens", self.DEFAULT_MAX_TOK)
 
         # Wrap stream_cb with the thinking-token filter
@@ -1048,12 +1108,30 @@ def build_rag_prompt(context_chunks: list[str], question: str) -> str:
     """
     Build a RAG prompt using Qwen3.5 ChatML instruction format.
     (<|im_start|> / <|im_end|> tokens)
-    Each chunk is capped at 1200 chars to fit within ctx=2048 budget.
+
+    Adaptive: caps total context size based on the active memory profile's
+    n_ctx so the prompt never overflows the KV cache.
     """
-    # Cap each chunk: 4 chunks x 1200 chars ~ 1200 tokens
-    # + system (~100) + question (~50) = ~1350 tokens
-    # leaving ~700 tokens for the reply (max_tok=512 + overhead).
-    capped = [c[:1200] for c in context_chunks]
+    from memory_management import check_memory_pressure
+    profile = check_memory_pressure()
+    n_ctx = profile.get("n_ctx", 2048)
+    max_tokens = profile.get("max_tokens", 512)
+
+    # Budget: n_ctx - max_tokens - system/question overhead (~200 tokens)
+    # ~3 chars per token is a safe estimate for English text
+    budget_chars = max(300, (n_ctx - max_tokens - 200) * 3)
+
+    # Fit as many chunks as the budget allows
+    capped = []
+    used = 0
+    for c in context_chunks:
+        avail = budget_chars - used
+        if avail <= 100:
+            break
+        piece = c[:avail]
+        capped.append(piece)
+        used += len(piece)
+
     ctx_text = "\n\n---\n\n".join(capped)
     system_msg = (
         "You are a precise document assistant. "

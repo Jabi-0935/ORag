@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../controllers/chat_controller.dart';
@@ -6,7 +7,6 @@ import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/chat_input_bar.dart';
-import '../widgets/document_drawer.dart';
 import '../widgets/init_overlay.dart';
 import 'settings_screen.dart';
 import '../widgets/source_card.dart';
@@ -45,6 +45,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void _sendMessage() {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
+    HapticFeedback.lightImpact();
     _controller.clear();
     ref.read(chatControllerProvider.notifier).submitQuery(text);
     _scrollToBottom();
@@ -89,10 +90,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatControllerProvider);
 
-    // Auto-scroll when messages update during streaming
-    if (chatState.isGenerating) {
-      _scrollToBottom();
-    }
+    // Auto-scroll when streaming starts or message count changes
+    ref.listen<ChatState>(chatControllerProvider, (prev, next) {
+      if (next.isGenerating) {
+        _scrollToBottom();
+      }
+      if ((prev?.messages.length ?? 0) != next.messages.length) {
+        _scrollToBottom();
+      }
+    });
 
     // Show error banner via SnackBar (non-destructive)
     ref.listen<ChatState>(chatControllerProvider, (prev, next) {
@@ -117,11 +123,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: const Color(0xFF040123),
-      endDrawer: chatState.initDone
-          ? DocumentDrawer(
-              platform:
-                  ref.read(chatControllerProvider.notifier).platform)
-          : null,
       body: Stack(
         children: [
           // Main chat UI — only built after init completes
@@ -136,6 +137,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   isGenerating: chatState.isGenerating,
                   onSend: _sendMessage,
                   onStop: _stopGeneration,
+                  onAddFile: () => ref.read(chatControllerProvider.notifier).pickAndUploadFile(),
+                  isUploading: chatState.isUploading,
+                  uploadStatus: chatState.uploadStatus,
                 ),
               ],
             ),
@@ -172,13 +176,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       child: Row(
         children: [
           // Logo
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
+          Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
             child: Image.asset(
               'assets/logo.png',
               width: 36,
               height: 36,
-              fit: BoxFit.cover,
+              fit: BoxFit.contain,
               errorBuilder: (_, __, ___) => const SizedBox(
                 width: 36, height: 36,
               ),
@@ -198,27 +204,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                Text(
-                  chatState.ragMode ? 'Document Q&A Mode' : 'Chat Mode',
-                  style: const TextStyle(
+                const Text(
+                  'Offline AI Assistant',
+                  style: TextStyle(
                     color: AppColors.textDim,
                     fontSize: 12,
                   ),
                 ),
               ],
             ),
-          ),
-
-          // RAG toggle
-          _buildModeToggle(chatState),
-
-          // Documents button
-          IconButton(
-            icon: const Icon(Icons.folder_outlined, size: 21),
-            tooltip: 'Documents',
-            onPressed: () =>
-                _scaffoldKey.currentState?.openEndDrawer(),
-            color: AppColors.textSecondary,
           ),
 
           // Settings button
@@ -233,54 +227,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
   }
 
-  Widget _buildModeToggle(ChatState chatState) {
-    return GestureDetector(
-      onTap: chatState.isGenerating
-          ? null
-          : () => ref.read(chatControllerProvider.notifier).toggleRagMode(),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: chatState.ragMode
-              ? AppColors.secondary.withValues(alpha: 0.15)
-              : AppColors.primary.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: chatState.ragMode
-                ? AppColors.secondary.withValues(alpha: 0.3)
-                : AppColors.primary.withValues(alpha: 0.2),
-            width: 1,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              chatState.ragMode
-                  ? Icons.description_rounded
-                  : Icons.chat_rounded,
-              size: 14,
-              color: chatState.ragMode
-                  ? AppColors.secondary
-                  : AppColors.primary,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              chatState.ragMode ? 'RAG' : 'Chat',
-              style: TextStyle(
-                color: chatState.ragMode
-                    ? AppColors.secondary
-                    : AppColors.primary,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+
 
   Widget _buildMessageList(ChatState chatState) {
     if (chatState.messages.isEmpty && chatState.initDone) {
@@ -333,12 +280,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 ),
               ],
             ),
-            child: ClipOval(
+            child: Container(
+              padding: const EdgeInsets.all(8),
               child: Image.asset(
                 'assets/logo.png',
                 width: 80,
                 height: 80,
-                fit: BoxFit.cover,
+                fit: BoxFit.contain,
                 errorBuilder: (_, __, ___) => const SizedBox(
                   width: 80, height: 80,
                 ),
@@ -359,12 +307,46 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           const SizedBox(height: 8),
           Text(
             chatState.ragMode
-                ? 'Upload documents via 📁 then ask questions'
+                ? 'Upload documents via ➕ then ask questions'
                 : 'Your offline AI assistant is ready',
             style: const TextStyle(
               color: AppColors.textDim,
               fontSize: 14,
             ),
+          ),
+          const SizedBox(height: 28),
+          // Suggestion chips
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: (chatState.ragMode
+                    ? [
+                        'Summarize this document',
+                        'What are the key findings?',
+                        'List the main topics',
+                      ]
+                    : [
+                        'Explain quantum computing',
+                        'Write a short poem',
+                        'Tips for productivity',
+                      ])
+                .map((suggestion) => ActionChip(
+                      label: Text(suggestion,
+                          style: const TextStyle(
+                              color: AppColors.textSecondary, fontSize: 12)),
+                      backgroundColor: AppColors.surface,
+                      side: BorderSide(
+                          color: AppColors.primary.withValues(alpha: 0.2)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20)),
+                      onPressed: () {
+                        HapticFeedback.selectionClick();
+                        _controller.text = suggestion;
+                        _sendMessage();
+                      },
+                    ))
+                .toList(),
           ),
         ],
       ),

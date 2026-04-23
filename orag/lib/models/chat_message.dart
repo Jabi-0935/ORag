@@ -53,6 +53,13 @@ class SourceAttribution {
   }
 
   bool get hasImages => images.isNotEmpty;
+
+  Map<String, dynamic> toJson() => {
+    'doc_name': docName,
+    'chunk_text': chunkText,
+    'score': score,
+    'images': images.map((i) => {'path': i.path, 'page': i.page, 'width': i.width, 'height': i.height}).toList(),
+  };
 }
 
 class ChatMessage {
@@ -87,4 +94,27 @@ class ChatMessage {
 
   /// Whether this message has inline images to render.
   bool get hasImages => images.isNotEmpty;
+
+  Map<String, dynamic> toJson() => {
+    'role': role.name,
+    'text': text,
+    'timestamp': timestamp.toIso8601String(),
+    'sources': sources.map((s) => s.toJson()).toList(),
+  };
+
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    final role = MessageRole.values.firstWhere(
+      (r) => r.name == json['role'],
+      orElse: () => MessageRole.assistant,
+    );
+    final srcList = (json['sources'] as List?)?.map(
+      (s) => SourceAttribution.fromJson(s as Map<String, dynamic>),
+    ).toList() ?? [];
+    return ChatMessage(
+      role: role,
+      text: json['text'] as String? ?? '',
+      timestamp: DateTime.tryParse(json['timestamp'] as String? ?? '') ?? DateTime.now(),
+      sources: srcList,
+    );
+  }
 }

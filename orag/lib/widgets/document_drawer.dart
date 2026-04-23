@@ -17,6 +17,8 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
   List<Map<String, dynamic>> _docs = [];
   bool _isLoading = true;
   bool _isUploading = false;
+  String _uploadStatus = '';
+  final Stopwatch _uploadStopwatch = Stopwatch();
 
   @override
   void initState() {
@@ -45,17 +47,41 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
     final path = result.files.single.path;
     if (path == null) return;
 
-    setState(() => _isUploading = true);
+    setState(() {
+      _isUploading = true;
+      _uploadStatus = 'Reading file…';
+      _uploadStopwatch
+        ..reset()
+        ..start();
+    });
+
+    // Update status periodically during upload
+    final statusTimer = Stream.periodic(
+      const Duration(seconds: 2),
+      (i) => i,
+    ).listen((_) {
+      if (mounted && _isUploading) {
+        final elapsed = _uploadStopwatch.elapsed.inSeconds;
+        setState(() {
+          _uploadStatus = 'Processing… ${elapsed}s';
+        });
+      }
+    });
 
     final response = await widget.platform.uploadDocument(path);
+    statusTimer.cancel();
+    _uploadStopwatch.stop();
     final success = response['success'] == true;
     final message = response['message'] as String? ?? '';
 
     if (mounted) {
-      setState(() => _isUploading = false);
+      setState(() {
+        _isUploading = false;
+        _uploadStatus = '';
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(message),
+          content: Text('$message (${_uploadStopwatch.elapsed.inSeconds}s)'),
           backgroundColor: success ? AppColors.success : AppColors.error,
         ),
       );
@@ -192,7 +218,9 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
                           ),
                         )
                       : const Icon(Icons.upload_file_rounded, size: 18),
-                  label: Text(_isUploading ? 'Uploading…' : 'Upload PDF / TXT'),
+                  label: Text(_isUploading
+                      ? _uploadStatus.isNotEmpty ? _uploadStatus : 'Uploading…'
+                      : 'Upload PDF / TXT'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: AppColors.background,

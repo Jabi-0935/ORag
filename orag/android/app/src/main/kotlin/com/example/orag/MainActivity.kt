@@ -8,6 +8,7 @@ import com.chaquo.python.PyObject
 import com.chaquo.python.android.AndroidPlatform
 import io.flutter.embedding.android.FlutterActivity
 import android.util.Log
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
 	private val CHANNEL = "orag"
@@ -39,6 +40,12 @@ class MainActivity : FlutterActivity() {
 		"progress" to 0.0,
 		"message" to "Preparing AI engine…"
 	)
+
+	// Managed thread pool: serializes Python calls (GIL already serializes),
+	// prevents thread exhaustion from rapid user input
+	private val pythonExecutor = Executors.newSingleThreadExecutor { r ->
+		Thread(r, "orag-python").apply { isDaemon = true }
+	}
 
 	/**
 	 * Called from Python (via Chaquopy invoke) for each generated token.
@@ -146,7 +153,7 @@ class MainActivity : FlutterActivity() {
 				if (call.method == "initPython") {
 					val modelPath = call.argument<String>("model_path") ?: ""
 
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val api = ensureApiModule()
 
@@ -170,7 +177,7 @@ class MainActivity : FlutterActivity() {
 							}
 							Log.e("ORAG", "Python init failed", e)
 						}
-					}.start()
+					}
 
 				} else if (call.method == "getStatus") {
 					// Non-blocking: return the cached status from onInitProgress
@@ -181,7 +188,7 @@ class MainActivity : FlutterActivity() {
 				} else if (call.method == "chatStream") {
 					val query = call.argument<String>("query") ?: ""
 
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val api = ensureApiModule()
 
@@ -203,12 +210,12 @@ class MainActivity : FlutterActivity() {
 							}
 							Log.e("ORAG", "chatStream failed", e)
 						}
-					}.start()
+					}
 
 				} else if (call.method == "chat") {
 					val query = call.argument<String>("query") ?: ""
 
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val response = ensureApiModule().callAttr("chat", query)
 
@@ -220,9 +227,9 @@ class MainActivity : FlutterActivity() {
 								result.error("ERROR", e.message, null)
 							}
 						}
-					}.start()
+					}
 				} else if (call.method == "stop") {
-					Thread {
+					pythonExecutor.execute {
 						try {
 							ensureApiModule().callAttr("stop_generation")
 							runOnUiThread { result.success(true) }
@@ -231,9 +238,9 @@ class MainActivity : FlutterActivity() {
 								result.error("ERROR", e.message, null)
 							}
 						}
-					}.start()
-					} else if (call.method == "clearMemory") {
-					Thread {
+					}
+				} else if (call.method == "clearMemory") {
+					pythonExecutor.execute {
 						try {
 							ensureApiModule().callAttr("clear_memory")
 							runOnUiThread { result.success(true) }
@@ -242,13 +249,13 @@ class MainActivity : FlutterActivity() {
 								result.error("ERROR", e.message, null)
 							}
 						}
-					}.start()
+					}
 
 				// ---- Document management ----
 
 				} else if (call.method == "uploadDocument") {
 					val filePath = call.argument<String>("file_path") ?: ""
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val response = ensureApiModule().callAttr("upload_document", filePath)
 							runOnUiThread { result.success(response.toString()) }
@@ -256,44 +263,44 @@ class MainActivity : FlutterActivity() {
 							runOnUiThread { result.error("ERROR", e.message, null) }
 							Log.e("ORAG", "uploadDocument failed", e)
 						}
-					}.start()
+					}
 
 				} else if (call.method == "listDocuments") {
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val response = ensureApiModule().callAttr("list_docs")
 							runOnUiThread { result.success(response.toString()) }
 						} catch (e: Exception) {
 							runOnUiThread { result.error("ERROR", e.message, null) }
 						}
-					}.start()
+					}
 
 				} else if (call.method == "deleteDocument") {
 					val docId = call.argument<Int>("doc_id") ?: 0
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val response = ensureApiModule().callAttr("delete_doc", docId)
 							runOnUiThread { result.success(response.toString()) }
 						} catch (e: Exception) {
 							runOnUiThread { result.error("ERROR", e.message, null) }
 						}
-					}.start()
+					}
 
 				} else if (call.method == "clearDocuments") {
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val response = ensureApiModule().callAttr("clear_docs")
 							runOnUiThread { result.success(response.toString()) }
 						} catch (e: Exception) {
 							runOnUiThread { result.error("ERROR", e.message, null) }
 						}
-					}.start()
+					}
 
 				// ---- RAG streaming ----
 
 				} else if (call.method == "ragStream") {
 					val query = call.argument<String>("query") ?: ""
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val api = ensureApiModule()
 							val response = api.callAttr(
@@ -311,37 +318,37 @@ class MainActivity : FlutterActivity() {
 							}
 							Log.e("ORAG", "ragStream failed", e)
 						}
-					}.start()
+					}
 
 				} else if (call.method == "getEngineHealth") {
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val response = ensureApiModule().callAttr("get_engine_health")
 							runOnUiThread { result.success(response.toString()) }
 						} catch (e: Exception) {
 							runOnUiThread { result.error("ERROR", e.message, null) }
 						}
-					}.start()
+					}
 
 				} else if (call.method == "getInitLogs") {
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val response = ensureApiModule().callAttr("get_init_logs")
 							runOnUiThread { result.success(response.toString()) }
 						} catch (e: Exception) {
 							runOnUiThread { result.success("Failed to get logs: ${e.message}") }
 						}
-					}.start()
+					}
 
 				} else if (call.method == "getResourceUsage") {
-					Thread {
+					pythonExecutor.execute {
 						try {
 							val response = ensureApiModule().callAttr("get_resource_usage")
 							runOnUiThread { result.success(response.toString()) }
 						} catch (e: Exception) {
 							runOnUiThread { result.error("ERROR", e.message, null) }
 						}
-					}.start()
+					}
 
 				} else {
 					result.notImplemented()

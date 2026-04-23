@@ -329,7 +329,6 @@ def list_documents() -> list[dict]:
     Safe during very early startup before init() has run.
     """
     try:
-        init_db()
         return storage_list_documents()
     except Exception:
         return []
@@ -338,7 +337,6 @@ def list_documents() -> list[dict]:
 def delete_document_by_id(doc_id: int) -> None:
     """Delete a document and refresh the in-memory retriever index."""
     try:
-        init_db()
         storage_delete_document(doc_id)
     finally:
         retriever.reload()
@@ -361,18 +359,8 @@ def chat_direct(
             result = (False, "No LLM model loaded. Please load a GGUF model first.")
         else:
             prompt = build_direct_prompt(question, history, summary)
-            
-            # Simple debug logger to show that generation is actually happening
-            def _debug_stream(token: str):
-                import sys
-                sys.stdout.write(token)
-                sys.stdout.flush()
-                if stream_cb:
-                    stream_cb(token)
-                    
-            print("[DEBUG] Generation started...")
-            answer = runtime.generate(prompt, stream_cb=_debug_stream).strip()
-            print("\n[DEBUG] Generation finished.")
+
+            answer = runtime.generate(prompt, stream_cb=stream_cb).strip()
             result = (True, answer)
     except Exception as exc:
         result = (False, f"Error during inference: {exc}")
@@ -401,6 +389,16 @@ def ask(
             result = (False, "No LLM model loaded. Please load a GGUF model first.", [])
         else:
             print(f"[RAG] Query: {question[:100]}")
+            # Ensure Nomic is running for dense retrieval (may have been
+            # stopped after ingest on low-RAM profiles)
+            try:
+                from memory_management import ensure_nomic_server, is_nomic_running
+                if not is_nomic_running():
+                    nomic_path = model_dest_path(NOMIC_MODEL["filename"])
+                    if os.path.isfile(nomic_path):
+                        ensure_nomic_server(nomic_path)
+            except Exception:
+                pass
             # Use Small-to-Big expansion: retrieve small chunks, expand to parent context
             results = retriever.query_with_expansion(question, top_k=2)
             if not results:
@@ -458,17 +456,9 @@ def ask(
                 except Exception as img_err:
                     print(f"[RAG] Image lookup skipped: {img_err}")
 
-                # Debug stream wrapper
-                def _debug_stream(token: str):
-                    import sys
-                    sys.stdout.write(token)
-                    sys.stdout.flush()
-                    if stream_cb:
-                        stream_cb(token)
-
                 print("[RAG] Generation started...")
-                answer = runtime.generate(prompt, stream_cb=_debug_stream).strip()
-                print(f"\n[RAG] Generation finished. Answer length: {len(answer)}")
+                answer = runtime.generate(prompt, stream_cb=stream_cb).strip()
+                print(f"[RAG] Generation finished. Answer length: {len(answer)}")
                 result = (True, answer, sources)
     except Exception as exc:
         import traceback

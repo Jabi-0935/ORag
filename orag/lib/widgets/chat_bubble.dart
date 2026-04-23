@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:intl/intl.dart';
 import '../models/chat_message.dart';
 import '../theme/app_theme.dart';
 
@@ -18,6 +20,8 @@ class ChatBubble extends StatefulWidget {
 
 class _ChatBubbleState extends State<ChatBubble> {
   static final FlutterTts _tts = FlutterTts();
+  // Track which message is currently speaking to prevent race conditions
+  static int? _currentlySpeakingHash;
   bool _isSpeaking = false;
 
   @override
@@ -37,8 +41,14 @@ class _ChatBubbleState extends State<ChatBubble> {
   Future<void> _toggleTts() async {
     if (_isSpeaking) {
       await _tts.stop();
+      _currentlySpeakingHash = null;
       setState(() => _isSpeaking = false);
     } else {
+      // Stop any currently speaking bubble first
+      if (_currentlySpeakingHash != null) {
+        await _tts.stop();
+      }
+      _currentlySpeakingHash = widget.message.hashCode;
       await _tts.setLanguage('en-US');
       await _tts.setSpeechRate(0.45);
       await _tts.speak(widget.message.text);
@@ -69,10 +79,21 @@ class _ChatBubbleState extends State<ChatBubble> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _bubble(isUser),
+                // Timestamp
+                Padding(
+                  padding: const EdgeInsets.only(top: 3, left: 4, right: 4),
+                  child: Text(
+                    DateFormat.jm().format(widget.message.timestamp),
+                    style: const TextStyle(
+                      color: AppColors.textDim,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
                 // TTS speaker button for assistant messages
                 if (!isUser && widget.message.text.isNotEmpty && !widget.message.isStreaming)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4, left: 4),
+                    padding: const EdgeInsets.only(top: 2, left: 4),
                     child: GestureDetector(
                       onTap: _toggleTts,
                       child: Row(
@@ -188,17 +209,35 @@ class _ChatBubbleState extends State<ChatBubble> {
           border: Border.all(color: AppColors.divider, width: 1),
         ),
         clipBehavior: Clip.antiAlias,
-        child: Image.network(
-          // On Android the path is a local file URI
-          img.path.startsWith('/') ? 'file://${img.path}' : img.path,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            color: AppColors.surface,
-            child: const Center(
-              child: Icon(Icons.broken_image_outlined,
-                  size: 24, color: AppColors.textDim),
-            ),
+        child: _buildImageWidget(img.path),
+      ),
+    );
+  }
+
+  /// Builds correct image widget: Image.file for local paths, Image.network for URLs.
+  Widget _buildImageWidget(String path) {
+    if (path.startsWith('/')) {
+      final file = File(path);
+      return Image.file(
+        file,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(
+          color: AppColors.surface,
+          child: const Center(
+            child: Icon(Icons.broken_image_outlined,
+                size: 24, color: AppColors.textDim),
           ),
+        ),
+      );
+    }
+    return Image.network(
+      path,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => Container(
+        color: AppColors.surface,
+        child: const Center(
+          child: Icon(Icons.broken_image_outlined,
+              size: 24, color: AppColors.textDim),
         ),
       ),
     );
@@ -218,19 +257,17 @@ class _ChatBubbleState extends State<ChatBubble> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: InteractiveViewer(
-                  child: Image.network(
-                    img.path.startsWith('/') ? 'file://${img.path}' : img.path,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => Container(
-                      width: 200,
-                      height: 200,
-                      color: AppColors.surface,
-                      child: const Center(
-                        child: Icon(Icons.broken_image_outlined,
-                            size: 48, color: AppColors.textDim),
-                      ),
-                    ),
-                  ),
+                  child: img.path.startsWith('/')
+                      ? Image.file(
+                          File(img.path),
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) => _brokenImagePlaceholder(),
+                        )
+                      : Image.network(
+                          img.path,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) => _brokenImagePlaceholder(),
+                        ),
                 ),
               ),
             ),
@@ -388,6 +425,18 @@ class _ChatBubbleState extends State<ChatBubble> {
           color: AppColors.primary,
           decoration: TextDecoration.underline,
         ),
+      ),
+    );
+  }
+
+  Widget _brokenImagePlaceholder() {
+    return Container(
+      width: 200,
+      height: 200,
+      color: AppColors.surface,
+      child: const Center(
+        child: Icon(Icons.broken_image_outlined,
+            size: 48, color: AppColors.textDim),
       ),
     );
   }

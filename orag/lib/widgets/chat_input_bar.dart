@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../theme/app_theme.dart';
 
@@ -12,6 +13,9 @@ class ChatInputBar extends StatefulWidget {
   final bool isGenerating;
   final VoidCallback onSend;
   final VoidCallback onStop;
+  final VoidCallback onAddFile;
+  final bool isUploading;
+  final String uploadStatus;
 
   const ChatInputBar({
     super.key,
@@ -20,6 +24,9 @@ class ChatInputBar extends StatefulWidget {
     required this.isGenerating,
     required this.onSend,
     required this.onStop,
+    required this.onAddFile,
+    required this.isUploading,
+    required this.uploadStatus,
   });
 
   @override
@@ -100,6 +107,16 @@ class _ChatInputBarState extends State<ChatInputBar> {
         top: false,
         child: Row(
           children: [
+            if (!widget.isGenerating && widget.enabled && !widget.isUploading)
+              IconButton(
+                icon: const Icon(Icons.add_circle_outline_rounded, size: 28),
+                color: AppColors.textSecondary,
+                onPressed: widget.onAddFile,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+            if (!widget.isGenerating && widget.enabled && !widget.isUploading)
+              const SizedBox(width: 12),
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
@@ -114,41 +131,84 @@ class _ChatInputBarState extends State<ChatInputBar> {
                     width: 1,
                   ),
                 ),
-                child: TextField(
-                  controller: widget.controller,
-                  enabled: widget.enabled && !widget.isGenerating,
-                  maxLines: 4,
-                  minLines: 1,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 15,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: _hintText,
-                    hintStyle: const TextStyle(
-                      color: AppColors.textDim,
-                      fontSize: 15,
-                    ),
-                    border: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 12,
-                    ),
-                  ),
-                  textInputAction: TextInputAction.send,
-                  onSubmitted:
-                      widget.enabled && !widget.isGenerating ? (_) => widget.onSend() : null,
-                ),
+                child: widget.isUploading
+                    ? Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 12),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                widget.uploadStatus.isNotEmpty
+                                    ? widget.uploadStatus
+                                    : 'Uploading...',
+                                style: const TextStyle(
+                                  color: AppColors.textDim,
+                                  fontSize: 15,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : KeyboardListener(
+                        focusNode: FocusNode(),
+                        onKeyEvent: (event) {
+                          if (event is KeyDownEvent &&
+                              event.logicalKey == LogicalKeyboardKey.enter &&
+                              !HardwareKeyboard.instance.isShiftPressed &&
+                              widget.enabled &&
+                              !widget.isGenerating) {
+                            widget.onSend();
+                          }
+                        },
+                        child: TextField(
+                          controller: widget.controller,
+                          enabled: widget.enabled && !widget.isGenerating,
+                          maxLines: 4,
+                          minLines: 1,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 15,
+                          ),
+                          decoration: InputDecoration(
+                            hintText: _hintText,
+                            hintStyle: const TextStyle(
+                              color: AppColors.textDim,
+                              fontSize: 15,
+                            ),
+                            border: InputBorder.none,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 12,
+                            ),
+                          ),
+                          textInputAction: TextInputAction.send,
+                          onSubmitted:
+                              widget.enabled && !widget.isGenerating ? (_) => widget.onSend() : null,
+                        ),
+                      ),
               ),
             ),
             const SizedBox(width: 8),
             // Microphone button
-            if (!widget.isGenerating && widget.enabled)
+            if (!widget.isGenerating && widget.enabled && !widget.isUploading)
               _MicButton(
                 isListening: _isListening,
                 onTap: _toggleListening,
               ),
-            if (!widget.isGenerating && widget.enabled)
+            if (!widget.isGenerating && widget.enabled && !widget.isUploading)
               const SizedBox(width: 4),
             _actionButton(),
           ],

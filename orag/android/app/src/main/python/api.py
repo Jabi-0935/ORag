@@ -43,9 +43,23 @@ def _emit_progress(state, progress, message):
 
 
 def trim_history():
+    """Trim history to MAX_TURNS and enforce character budget."""
     global _conversation_history
     if len(_conversation_history) > MAX_TURNS:
         _conversation_history = _conversation_history[-MAX_TURNS:]
+    # Enforce character budget to prevent context window overflow
+    try:
+        from memory_management import get_profile
+        profile = get_profile()
+        n_ctx = profile.get("n_ctx", 2048)
+        max_tokens = profile.get("max_tokens", 512)
+        budget_chars = max(300, (n_ctx - max_tokens - 200) * 3)
+        total = sum(len(q) + len(a) for q, a in _conversation_history)
+        while total > budget_chars and _conversation_history:
+            removed = _conversation_history.pop(0)
+            total -= len(removed[0]) + len(removed[1])
+    except Exception:
+        pass
 
 
 def clear_memory():
