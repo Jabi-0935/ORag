@@ -316,6 +316,109 @@ def nomic_port() -> int:
     return _NOMIC_PORT
 
 
+def _prepare_android_env() -> dict:
+    """Build an environment dict suitable for launching native binaries on Android.
+
+    Sets LD_LIBRARY_PATH to include the nativeLibraryDir so the dynamic linker
+    can resolve libllama_server.so's dependencies (libc, libdl, libm are system
+    libs but the linker still needs the search path for the binary itself).
+    """
+    env = os.environ.copy()
+    if _is_android() and _ANDROID_NATIVE_LIB_DIR:
+        ld = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{_ANDROID_NATIVE_LIB_DIR}:{ld}" if ld else _ANDROID_NATIVE_LIB_DIR
+    return env
+
+
+def _launch_binary(cmd: list, log_file=None, env: dict | None = None) -> subprocess.Popen:
+    """Launch a native binary in a cross-platform way.
+
+    On Android: ensures executable permissions, sets LD_LIBRARY_PATH, and tries
+    multiple execution strategies if direct exec fails (ENOEXEC).
+
+    Strategy order:
+      1. Direct exec (works on most Android versions)
+      2. Copy binary to app's private filesDir and exec from there
+         (some Android versions require binaries in writable private dirs)
+      3. Invoke via /system/bin/linker64 (bypasses kernel exec check)
+    """
+    exe_path = cmd[0]
+
+    # Ensure the binary has execute permissions (Android may strip them)
+    if _is_android():
+        try:
+            import stat
+            st = os.stat(exe_path)
+            if not (st.st_mode & stat.S_IXUSR):
+                os.chmod(exe_path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                print(f"[launch] Set +x on {exe_path}")
+        except Exception as e:
+            print(f"[launch] chmod failed (non-fatal): {e}")
+
+    if env is None:
+        env = _prepare_android_env()
+
+    kwargs = dict(
+        stdout=log_file if log_file else subprocess.DEVNULL,
+        stderr=log_file if log_file else subprocess.DEVNULL,
+        env=env,
+    )
+
+    # creationflags is Windows-only; using it on Android causes issues
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        return subprocess.Popen(cmd, **kwargs)
+
+    # On Android, try multiple execution strategies
+    strategies = [cmd]  # Strategy 1: direct exec
+
+    if _is_android():
+        # Strategy 2: copy to filesDir and exec from there
+        priv = _android_private_dir()
+        if priv:
+            import shutil
+            bin_name = os.path.basename(exe_path)
+            copied_path = os.path.join(priv, bin_name)
+            try:
+                if not os.path.isfile(copied_path) or os.path.getsize(copied_path) != os.path.getsize(exe_path):
+                    shutil.copy2(exe_path, copied_path)
+                    print(f"[launch] Copied binary to {copied_path}")
+                import stat as stat_mod
+                os.chmod(copied_path, 0o755)
+                copied_cmd = [copied_path] + cmd[1:]
+                strategies.append(copied_cmd)
+            except Exception as e:
+                print(f"[launch] Copy-to-filesDir failed (non-fatal): {e}")
+
+        # Strategy 3: invoke via linker64
+        linker = "/system/bin/linker64"
+        if os.path.isfile(linker):
+            linker_cmd = [linker, exe_path] + cmd[1:]
+            strategies.append(linker_cmd)
+
+    last_error = None
+    for i, try_cmd in enumerate(strategies):
+        try:
+            print(f"[launch] Strategy {i+1}: {try_cmd[0]}")
+            proc = subprocess.Popen(try_cmd, **kwargs)
+            # Check if process died immediately (within 0.5s)
+            import time
+            time.sleep(0.3)
+            if proc.poll() is not None:
+                rc = proc.returncode
+                print(f"[launch] Strategy {i+1} exited immediately with code {rc}")
+                last_error = OSError(f"Process exited immediately (code {rc})")
+                continue
+            print(f"[launch] Strategy {i+1} succeeded (pid={proc.pid})")
+            return proc
+        except OSError as e:
+            print(f"[launch] Strategy {i+1} failed: {e}")
+            last_error = e
+            continue
+
+    raise last_error or OSError("All launch strategies failed")
+
+
 def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
                         on_progress: Optional[Callable[[float, str], None]] = None) -> bool:
     global _LLAMASERVER_PROC, _ANDROID_BINARY_ERROR
@@ -328,7 +431,7 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
         # Fast-path: the Android foreground service may have already started
         # llama-server.  If the port is responding we don't need a new process.
         if _probe_port(_LLAMASERVER_PORT):
-            print("[llama-server] Already running (owned by service) â€” skipping launch.")
+            print("[llama-server] Already running (owned by service) \u2013 skipping launch.")
             if on_progress:
                 on_progress(1.0, "AI engine ready!")
             return True
@@ -354,7 +457,6 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
         print("  Loading model into memory, please wait ...")
         if on_progress:
             on_progress(0.02, f"Starting AI engine\u2026 ({Path(model_path).name})")
-        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         log_file = None
         priv = _android_private_dir()
         if priv:
@@ -364,12 +466,7 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
             except Exception:
                 pass
         try:
-            _LLAMASERVER_PROC = subprocess.Popen(
-                cmd,
-                stdout=log_file if log_file else subprocess.DEVNULL,
-                stderr=log_file if log_file else subprocess.DEVNULL,
-                creationflags=cf,
-            )
+            _LLAMASERVER_PROC = _launch_binary(cmd, log_file=log_file)
         except Exception as exc:
             if log_file:
                 log_file.close()
@@ -435,7 +532,6 @@ def start_nomic_server(model_path: str,
         ]
         print(f"[nomic-server] Starting on port {_NOMIC_PORT}")
         print(f"  Model: {Path(model_path).name}")
-        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         log_file = None
         priv = _android_private_dir()
         if priv:
@@ -444,12 +540,7 @@ def start_nomic_server(model_path: str,
             except Exception:
                 pass
         try:
-            _NOMIC_PROC = subprocess.Popen(
-                cmd,
-                stdout=log_file if log_file else subprocess.DEVNULL,
-                stderr=log_file if log_file else subprocess.DEVNULL,
-                creationflags=cf,
-            )
+            _NOMIC_PROC = _launch_binary(cmd, log_file=log_file)
         except Exception as exc:
             if log_file:
                 log_file.close()
