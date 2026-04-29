@@ -1,0 +1,47 @@
+[
+  {
+    "question": "What is retrieval-augmented generation?",
+    "ground_truth": "Retrieval-Augmented Generation (RAG) is a technique that combines a retrieval system with a generative language model. It retrieves relevant documents from a knowledge base and uses them as context to generate more accurate and grounded answers.",
+    "doc_paths": [],
+    "contexts": [
+      "Retrieval-Augmented Generation (RAG) enhances large language models by retrieving relevant documents from an external knowledge base at inference time, allowing the model to produce more accurate and factual responses without retraining.",
+      "The RAG pipeline consists of two main components: a retriever that fetches relevant passages from a corpus, and a generator (LLM) that synthesizes those passages into a coherent answer."
+    ]
+  },
+  {
+    "question": "How does BM25 differ from dense retrieval?",
+    "ground_truth": "BM25 is a sparse, term-frequency-based retrieval algorithm that ranks documents based on keyword overlap with the query. Dense retrieval uses neural embeddings to capture semantic similarity, enabling it to find relevant documents even when exact keywords are absent.",
+    "doc_paths": [],
+    "contexts": [
+      "BM25 (Best Match 25) is a probabilistic ranking function that weighs term frequency against document length to score keyword matches. It is fast and effective for exact-match queries but struggles with synonym-based or paraphrase queries.",
+      "Dense retrieval models encode both queries and documents into high-dimensional embedding vectors. Similarity is then measured via cosine similarity, allowing the retrieval of semantically related documents even without shared keywords."
+    ]
+  },
+  {
+    "question": "What is Reciprocal Rank Fusion?",
+    "ground_truth": "Reciprocal Rank Fusion (RRF) is a rank-based fusion method that combines multiple ranked lists of retrieved documents. Each document's score is computed as the sum of reciprocal ranks across all lists, making it robust to score scale differences.",
+    "doc_paths": [],
+    "contexts": [
+      "Reciprocal Rank Fusion (RRF) merges multiple result lists by assigning each document a score of 1/(k + rank) for each list it appears in, where k is a constant (typically 60). The final ranking is determined by summing these scores.",
+      "RRF is particularly useful in hybrid retrieval systems that combine sparse (BM25) and dense (embedding-based) results. Because it uses ranks rather than raw scores, it is insensitive to differences in score distributions between retrieval methods."
+    ]
+  },
+  {
+    "question": "Explain small-to-big chunk retrieval.",
+    "ground_truth": "Small-to-big chunk retrieval is a hierarchical retrieval strategy where small, precise text chunks are used for retrieval scoring, but the answer is generated using larger parent chunks that provide richer context. This balances retrieval precision with generation quality.",
+    "doc_paths": [],
+    "contexts": [
+      "In small-to-big retrieval, a document is split into small chunks (e.g., 100-word sentences) for fine-grained matching, and larger parent chunks (e.g., 400-word paragraphs) for context during generation. The retriever scores small chunks, then the system expands them to their parent for the LLM.",
+      "The motivation behind small-to-big retrieval is that small chunks improve retrieval precision while larger chunks provide the LLM with enough surrounding context to generate accurate, coherent answers."
+    ]
+  },
+  {
+    "question": "What is the role of a reranker in a RAG pipeline?",
+    "ground_truth": "A reranker re-scores an initial set of retrieved documents using a more powerful cross-encoder model. It improves precision by pushing the most relevant documents to the top, filtering out noisy chunks before they are passed to the LLM.",
+    "doc_paths": [],
+    "contexts": [
+      "Reranking is a two-stage retrieval approach. First, a fast retriever (e.g., BM25 or bi-encoder) fetches a candidate set. Then, a cross-encoder reranker evaluates each candidate against the query jointly, producing a more accurate relevance score.",
+      "Cross-encoder rerankers attend to both the query and the document simultaneously, unlike bi-encoders that embed them independently. This joint attention enables more nuanced relevance judgments but is computationally more expensive, making it suitable only for reranking a small candidate set."
+    ]
+  }
+]

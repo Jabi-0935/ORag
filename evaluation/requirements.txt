@@ -1,0 +1,11 @@
+# O-RAG RAGAS evaluation dependencies — fully local, no API key required
+# Install with: pip install -r evaluation/requirements.txt
+
+ragas>=0.1.21
+datasets>=2.18.0
+langchain-openai>=0.1.6   # needed for LangchainLLMWrapper; no real OpenAI calls
+pandas>=2.0.0
+matplotlib>=3.7.0
+
+# Fallback: embedding-only metrics without any running server
+sentence-transformers>=2.7.0
