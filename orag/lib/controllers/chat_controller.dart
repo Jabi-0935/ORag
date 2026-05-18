@@ -21,6 +21,7 @@ class ChatState {
   final bool isUploading;
   final String uploadStatus;
   final String? activeDocumentName;
+  final bool longerAnswers;
 
   const ChatState({
     this.messages = const [],
@@ -32,6 +33,7 @@ class ChatState {
     this.isUploading = false,
     this.uploadStatus = '',
     this.activeDocumentName,
+    this.longerAnswers = false,
   });
 
   ChatState copyWith({
@@ -46,6 +48,7 @@ class ChatState {
     String? uploadStatus,
     String? activeDocumentName,
     bool clearActiveDocument = false,
+    bool? longerAnswers,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
@@ -57,6 +60,7 @@ class ChatState {
       isUploading: isUploading ?? this.isUploading,
       uploadStatus: uploadStatus ?? this.uploadStatus,
       activeDocumentName: clearActiveDocument ? null : (activeDocumentName ?? this.activeDocumentName),
+      longerAnswers: longerAnswers ?? this.longerAnswers,
     );
   }
 }
@@ -175,6 +179,12 @@ class ChatController extends Notifier<ChatState> {
     }
   }
 
+  void toggleLongerAnswers() {
+    if (!state.isGenerating) {
+      state = state.copyWith(longerAnswers: !state.longerAnswers);
+    }
+  }
+
   void _exitRagMode() {
     state = state.copyWith(ragMode: false, clearActiveDocument: true);
     _addSystemMessage(
@@ -255,7 +265,7 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
-    final chat = _platform.chatStream(text);
+    final chat = _platform.chatStream(text, longerAnswers: state.longerAnswers);
 
     _chatSub?.cancel();
     _chatSub = chat.tokens.listen(
@@ -318,7 +328,7 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
-    final rag = _platform.ragStream(text);
+    final rag = _platform.ragStream(text, longerAnswers: state.longerAnswers);
 
     _chatSub?.cancel();
     _chatSub = rag.tokens.listen(

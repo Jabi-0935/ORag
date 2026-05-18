@@ -201,16 +201,15 @@ def _compute_profile() -> dict:
         return {
             "profile": "ULTRA_LOW",
             "total_ram_gb": total,
-            # n_ctx=1024: KV cache with q4_0 is only ~10 MB (Qwen 1.5B)
-            # or ~21 MB (Qwen 7B) — negligible. Gives 192-token context budget.
-            "n_ctx": 1024,
+            # n_ctx=1536: KV cache with q4_0 is ~21 MB (Qwen 1.5B)
+            "n_ctx": 1536,
             "max_tokens": 256,
             "n_threads": 2,
             "nomic_ctx": 64,
             "nomic_lazy": True,        # Lazy: start Nomic only on first RAG query
             "embed_chunk_limit": 15,   # Embed only top 15 chunks
             "kv_cache_type": "q4_0",
-            "batch_size": 64,
+            "batch_size": 256,
             "use_mmap": True,          # Let OS page-in model on demand
             # Only ULTRA_LOW stops Nomic after embedding to reclaim RAM
             "stop_nomic_after_embed": True,
@@ -221,17 +220,16 @@ def _compute_profile() -> dict:
         return {
             "profile": "LOW",
             "total_ram_gb": total,
-            # n_ctx=1536: KV cache with q4_0 is only ~21 MB (Qwen 1.5B)
-            # or ~42 MB (Qwen 7B) — negligible. Gives 448-token context budget.
-            "n_ctx": 1536,
+            # n_ctx=2048: KV cache with q4_0 is only ~28 MB (Qwen 1.5B)
+            "n_ctx": 2048,
             "max_tokens": 512,
             "n_threads": 2,
             "nomic_ctx": 64,
             "nomic_lazy": True,
             "embed_chunk_limit": 25,
             "kv_cache_type": "q4_0",
-            "batch_size": 64,
-            "use_mmap": True,
+            "batch_size": 512,
+            "use_mmap": False,
             # LOW keeps Nomic alive — 4 GB devices have enough headroom
             # with q4_0 KV cache on both servers (~100 MB Nomic footprint)
             "stop_nomic_after_embed": False,
@@ -242,14 +240,14 @@ def _compute_profile() -> dict:
         return {
             "profile": "MEDIUM",
             "total_ram_gb": total,
-            "n_ctx": 2048,
+            "n_ctx": 3072,
             "max_tokens": 768,
             "n_threads": optimal_threads(),
             "nomic_ctx": 384,
             "nomic_lazy": False,       # Eager: load Nomic at startup
             "embed_chunk_limit": 50,
             "kv_cache_type": "q8_0",
-            "batch_size": 512,
+            "batch_size": 1024,
             "use_mmap": False,         # Full load for consistent latency
             "stop_nomic_after_embed": False,
             "prune_ratio": 0.4,
@@ -265,7 +263,7 @@ def _compute_profile() -> dict:
         "nomic_lazy": False,
         "embed_chunk_limit": 100,
         "kv_cache_type": "q8_0",
-        "batch_size": 512,
+        "batch_size": 1024,
         "use_mmap": False,
         "stop_nomic_after_embed": False,
         "prune_ratio": 0.4,

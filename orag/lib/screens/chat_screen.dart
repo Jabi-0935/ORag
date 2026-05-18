@@ -8,12 +8,9 @@ import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/chat_input_bar.dart';
-import '../widgets/context_chunks_card.dart';
 import '../widgets/document_drawer.dart';
 import '../widgets/init_overlay.dart';
-import '../widgets/thinking_dropdown.dart';
 import 'settings_screen.dart';
-import '../widgets/source_card.dart';
 import '../widgets/typing_indicator.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -235,6 +232,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             ),
           ),
 
+          // Longer Answers Toggle
+          Tooltip(
+            message: 'Longer Answers',
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.notes_rounded, size: 18, color: AppColors.textSecondary),
+                Transform.scale(
+                  scale: 0.7,
+                  child: Switch(
+                    value: chatState.longerAnswers,
+                    onChanged: (_) {
+                      HapticFeedback.selectionClick();
+                      ref.read(chatControllerProvider.notifier).toggleLongerAnswers();
+                    },
+                    activeColor: AppColors.primary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
           // Documents button
           IconButton(
             icon: const Icon(Icons.folder_open_rounded, size: 21),
@@ -352,15 +371,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   ChatBubble(message: msg),
-                  // 🧠 Thinking dropdown — shown when Qwen3 produced a <think> block
-                  if (msg.isAssistant && msg.hasThinking && !msg.isStreaming)
-                    ThinkingDropdown(thinkingText: msg.thinkingText),
-                  // 📄 Context chunks — shown in Document mode with parent chunk texts
-                  if (msg.isAssistant && msg.hasParentChunks && !msg.isStreaming)
-                    ContextChunksCard(chunks: msg.parentChunks),
-                  // 🔗 Source attribution card (doc name + preview)
-                  if (msg.isAssistant && msg.hasSources && !msg.isStreaming)
-                    SourceCard(sources: msg.sources),
                 ],
               ),
             ),

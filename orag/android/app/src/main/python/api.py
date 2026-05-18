@@ -99,13 +99,13 @@ def trim_history():
         _conversation_summary = _conversation_summary[-400:]
         _conversation_history = _conversation_history[-MAX_TURNS:]
     # Enforce character budget to prevent context window overflow
-    # Uses 512-token system overhead estimate to match build_rag_prompt.
+    # Uses 256-token system overhead estimate to match build_rag_prompt.
     try:
         from memory_management import get_profile
         profile = get_profile()
         n_ctx = profile.get("n_ctx", 2048)
         max_tokens = profile.get("max_tokens", 512)
-        budget_chars = max(300, (n_ctx - max_tokens - 512) * 3)
+        budget_chars = max(300, (n_ctx - max_tokens - 256) * 4)
         total = sum(len(q) + len(a) for q, a in _conversation_history)
         while total > budget_chars and _conversation_history:
             removed = _conversation_history.pop(0)
@@ -167,24 +167,45 @@ def _prewarm_kv_cache() -> None:
 
     time.sleep(1.5)   # small grace period after health confirms ready
 
-    prewarm_prompt = build_direct_prompt("Hello", history=[], summary="")
-    payload = json.dumps({
-        "prompt": prewarm_prompt,
+    # Pre-warm Direct Chat prompt
+    prewarm_prompt_direct = build_direct_prompt("Hello", history=[], summary="")
+    payload_direct = json.dumps({
+        "prompt": prewarm_prompt_direct,
         "n_predict": 1,
         "temperature": 0.0,
         "cache_prompt": True,   # keep KV in server cache after this call
     }).encode()
+    
+    # Pre-warm RAG system prompt prefix (up to the user block)
+    from llm import build_rag_prompt
+    # Passing empty context and question "Hello" generates the base RAG prompt shape
+    prewarm_prompt_rag = build_rag_prompt([], "Hello")
+    # Only evaluate up to the Context: part to pre-cache the static system message
+    split_idx = prewarm_prompt_rag.find("Context:\n")
+    if split_idx != -1:
+        prewarm_prompt_rag = prewarm_prompt_rag[:split_idx]
+        
+    payload_rag = json.dumps({
+        "prompt": prewarm_prompt_rag,
+        "n_predict": 1,
+        "temperature": 0.0,
+        "cache_prompt": True,
+    }).encode()
+
     url = f"http://127.0.0.1:{QWEN_SERVER_PORT}/completion"
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={"Content-Type": "application/json"}, method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30):
-            pass
-        print("[API] KV cache pre-warmed — first query will be fast.")
-    except Exception as e:
-        print(f"[API] Pre-warm skipped (non-fatal): {e}")
+    
+    for payload in [payload_direct, payload_rag]:
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"}, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30):
+                pass
+        except Exception as e:
+            print(f"[API] Pre-warm skipped (non-fatal): {e}")
+            
+    print("[API] KV cache pre-warmed — first queries will be fast.")
 
 
 def ensure_ready(model_path=None):
@@ -368,7 +389,7 @@ def chat(query):
         _is_generating = False
 
 
-def chat_stream(query, token_callback):
+def chat_stream(query, token_callback, longer_answers=False):
     """Streaming chat — calls token_callback for each generated token."""
     global _is_generating, _stop_flag
 
@@ -396,6 +417,7 @@ def chat_stream(query, token_callback):
             history=_conversation_history,
             summary=_conversation_summary,
             stream_cb=_on_token,
+            longer_answers=longer_answers,
         )
 
         if ok:
@@ -469,7 +491,7 @@ def clear_docs():
 #  RAG streaming query                                                 #
 # ------------------------------------------------------------------ #
 
-def ask_rag(query, token_callback):
+def ask_rag(query, token_callback, longer_answers=False):
     """RAG streaming query with source attribution, response caching,
     and conversation history so follow-up questions carry prior context."""
     global _is_generating, _stop_flag
@@ -514,7 +536,9 @@ def ask_rag(query, token_callback):
         ok, response, sources, thinking, parent_chunks = pipeline.ask(
             question=query,
             history=_conversation_history,
+            summary=_conversation_summary,
             stream_cb=_on_token,
+            longer_answers=longer_answers,
         )
 
         print("[RAG-STREAM] Response received")

@@ -187,6 +187,7 @@ class MainActivity : FlutterActivity() {
 
 				} else if (call.method == "chatStream") {
 					val query = call.argument<String>("query") ?: ""
+					val longerAnswers = call.argument<Boolean>("longer_answers") ?: false
 
 					pythonExecutor.execute {
 						try {
@@ -196,7 +197,7 @@ class MainActivity : FlutterActivity() {
 							// Chaquopy makes it callable via .invoke() on
 							// the Python side.
 							val response = api.callAttr(
-								"chat_stream", query, this@MainActivity::onStreamToken
+								"chat_stream", query, this@MainActivity::onStreamToken, longerAnswers
 							)
 
 							runOnUiThread {
@@ -300,11 +301,12 @@ class MainActivity : FlutterActivity() {
 
 				} else if (call.method == "ragStream") {
 					val query = call.argument<String>("query") ?: ""
+					val longerAnswers = call.argument<Boolean>("longer_answers") ?: false
 					pythonExecutor.execute {
 						try {
 							val api = ensureApiModule()
 							val response = api.callAttr(
-								"ask_rag", query, this@MainActivity::onStreamToken
+								"ask_rag", query, this@MainActivity::onStreamToken, longerAnswers
 							)
 							runOnUiThread {
 								streamSink?.success("__STREAM_END__")

@@ -322,6 +322,7 @@ def chat_direct(
     summary: str = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
+    longer_answers: bool = False,
 ) -> tuple[bool, str, str]:
     """
     Chat directly with the LLM (no retrieval).
@@ -333,10 +334,10 @@ def chat_direct(
         if not runtime.is_loaded():
             result = (False, "No LLM model loaded. Please load a GGUF model first.", "")
         else:
-            prompt = build_direct_prompt(question, history, summary)
+            prompt = build_direct_prompt(question, history, summary, longer_answers=longer_answers)
             from memory_management import check_memory_pressure
             pressure = check_memory_pressure()
-            max_tok = _estimate_max_tokens(question, pressure)
+            max_tok = _estimate_max_tokens(question, pressure, longer_answers=longer_answers)
             answer = runtime.generate(prompt, stream_cb=stream_cb, max_tokens=max_tok).strip()
             thinking = getattr(runtime, 'last_thinking', '')
             result = (True, answer, thinking)
@@ -351,15 +352,14 @@ def chat_direct(
 def _estimate_top_k(question: str) -> int:
     """
     Estimate chunk count needed based on question complexity AND device profile.
-    Broad/analytical questions get more context; simple factual ones stay lean.
-    Profile-aware: MEDIUM/HIGH devices retrieve more chunks for richer answers.
+    Since parent chunks are large (400 words), keep chunk count low to avoid TTFT delays.
     Zero latency — pure string heuristics, no model call.
     """
     from memory_management import get_profile
     profile_name = get_profile().get("profile", "LOW")
 
     # Base chunk count per profile — scales with available context window
-    base_k = {"ULTRA_LOW": 1, "LOW": 2, "MEDIUM": 3, "HIGH": 4}.get(profile_name, 2)
+    base_k = {"ULTRA_LOW": 2, "LOW": 2, "MEDIUM": 3, "HIGH": 4}.get(profile_name, 2)
 
     q_lower = question.lower()
     broad_signals = [
@@ -368,13 +368,13 @@ def _estimate_top_k(question: str) -> int:
         "main points", "key findings", "tell me about", "how does",
     ]
     if any(sig in q_lower for sig in broad_signals):
-        return min(base_k + 2, 6)   # broad questions get 2 extra chunks
+        return min(base_k + 1, 5)   # broad questions get extra chunk (max 5)
     if len(question.split()) > 20:
-        return min(base_k + 1, 5)   # long questions likely need more context
+        return min(base_k + 1, 5)   # long questions get extra chunk (max 5)
     return base_k
 
 
-def _estimate_max_tokens(question: str, profile: dict) -> int:
+def _estimate_max_tokens(question: str, profile: dict, longer_answers: bool = False) -> int:
     """
     Give complex / summary questions more token budget so answers are never
     truncated mid-sentence.  Cap simple factual questions for lower latency.
@@ -387,6 +387,9 @@ def _estimate_max_tokens(question: str, profile: dict) -> int:
     from memory_management import get_profile as _get_profile
     n_ctx     = _get_profile().get("n_ctx", 2048)
     abs_max   = max(64, int(n_ctx * 0.40))   # 40% of n_ctx hard ceiling
+
+    if longer_answers:
+        return abs_max
 
     base = profile.get("max_tokens", 512)
     q_lower = question.lower()
@@ -425,8 +428,10 @@ def _build_retrieval_query(question: str, history: list) -> str:
 def ask(
     question: str,
     history: list | None = None,
+    summary: str = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
+    longer_answers: bool = False,
 ) -> tuple[bool, str, list, str, list]:
     """
     Run a RAG query synchronously.
@@ -496,13 +501,13 @@ def ask(
                         "score": round(score, 4),
                     })
 
-                prompt = build_rag_prompt(context_chunks, question)
+                prompt = build_rag_prompt(context_chunks, question, history, summary, longer_answers=longer_answers)
                 print(f"[RAG] Prompt length: {len(prompt)} chars")
 
                 # Adaptive token budget: summaries get more room, simple facts less
                 from memory_management import check_memory_pressure
                 pressure = check_memory_pressure()
-                max_tok = _estimate_max_tokens(question, pressure)
+                max_tok = _estimate_max_tokens(question, pressure, longer_answers=longer_answers)
                 print(f"[RAG] max_tokens={max_tok} (base={pressure.get('max_tokens', 512)})")
 
                 seen_doc_names = set()

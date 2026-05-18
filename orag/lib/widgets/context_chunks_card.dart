@@ -7,22 +7,26 @@ import '../theme/app_theme.dart';
 /// Only rendered when [chunks] is non-empty.
 class ContextChunksCard extends StatefulWidget {
   final List<ParentChunk> chunks;
+  final bool initiallyExpanded;
 
-  const ContextChunksCard({super.key, required this.chunks});
+  const ContextChunksCard({
+    super.key,
+    required this.chunks,
+    this.initiallyExpanded = false,
+  });
 
   @override
   State<ContextChunksCard> createState() => _ContextChunksCardState();
 }
 
-class _ContextChunksCardState extends State<ContextChunksCard> {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
 
   @override
   Widget build(BuildContext context) {
     if (widget.chunks.isEmpty) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(left: 50, right: 48, top: 2, bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Container(
         decoration: BoxDecoration(
           color: AppColors.surface,

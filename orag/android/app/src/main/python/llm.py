@@ -405,12 +405,15 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
                 on_progress(1.0, "AI engine ready!")
             return True
         profile = get_memory_profile()
+        # Use optimal_threads() (half of physical cores) for batch processing
+        # This prevents slow LITTLE cores from bottlenecking the fast performance cores.
+        batch_threads = optimal_threads()
         cmd = [
             str(exe),
             "--model", model_path,
             "--ctx-size", str(n_ctx),              # dynamic from profile
             "--threads", str(n_threads),           # dynamic from profile
-            "--threads-batch", str(n_threads),
+            "--threads-batch", str(batch_threads),
             "--port", str(_LLAMASERVER_PORT),
             "--host", "127.0.0.1",
             "--n-gpu-layers", "0",
@@ -1158,7 +1161,13 @@ class _ThinkingStreamFilter:
 #  Prompt builder                                                      #
 # ------------------------------------------------------------------ #
 
-def build_rag_prompt(context_chunks: list[str], question: str) -> str:
+def build_rag_prompt(
+    context_chunks: list[str], 
+    question: str,
+    history: list[tuple[str, str]] | None = None,
+    summary: str = "",
+    longer_answers: bool = False,
+) -> str:
     """
     Build a RAG prompt using Qwen3.5 ChatML instruction format.
     (<|im_start|> / <|im_end|> tokens)
@@ -1177,10 +1186,10 @@ def build_rag_prompt(context_chunks: list[str], question: str) -> str:
     n_ctx      = profile.get("n_ctx", 2048)
     max_tokens = profile.get("max_tokens", 512)
 
-    # Conservative token estimate: 3.5 chars/token, 512-token system overhead
+    # Conservative token estimate: 4 chars/token, 256-token system overhead
     # Leave a 64-token safety buffer so we never hit the exact boundary.
-    context_token_budget = max(64, n_ctx - max_tokens - 512 - 64)
-    budget_chars = context_token_budget * 3  # 3 chars/token for chunk text
+    context_token_budget = max(64, n_ctx - max_tokens - 256 - 64)
+    budget_chars = context_token_budget * 4  # 4 chars/token for chunk text
 
     # Fit as many chunks as the budget allows
     capped = []
@@ -1194,20 +1203,39 @@ def build_rag_prompt(context_chunks: list[str], question: str) -> str:
         used += len(piece)
 
     ctx_text = "\n\n---\n\n".join(capped)
-    system_msg = (
-        "You are an expert document analyst. Answer the user's question directly and concisely using only the provided context.\n"
-        "If you need to analyze the question, determine complexity, or plan your response, wrap your reasoning inside <think> and </think> tags before writing your final answer.\n"
-        "If the question is simple, provide a short 1-2 sentence answer. If the question is complex, provide a detailed multi-paragraph answer.\n"
-        "Write your final answer in plain text paragraphs. Do not use bullet points or numbered lists.\n"
-        "If the context does not contain the answer, say: \"I don't know based on the provided documents.\"\n"
-        "Do not repeat the question. Just give the answer."
-    )
-    return (
-        f"<|im_start|>system\n{system_msg}<|im_end|>\n"
+    
+    if longer_answers:
+        system_msg = (
+            "You are an expert analyst. Provide a highly detailed, comprehensive, and exhaustive answer using only the provided context.\n"
+            "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
+            "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
+            "Do not repeat the question."
+        )
+    else:
+        system_msg = (
+            "You are an expert analyst. Answer directly and concisely using only the provided context.\n"
+            "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
+            "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
+            "Do not repeat the question."
+        )
+    
+    if summary.strip():
+        system_msg += "\n\nEarlier in this conversation (summary):\n" + summary.strip()
+
+    parts: list[str] = [f"<|im_start|>system\n{system_msg}<|im_end|>\n"]
+
+    for user_msg, asst_msg in (history or [])[-3:]:
+        parts.append(
+            f"<|im_start|>user\n{user_msg}<|im_end|>\n"
+            f"<|im_start|>assistant\n{asst_msg}<|im_end|>\n"
+        )
+    
+    parts.append(
         f"<|im_start|>user\n"
         f"Context:\n{ctx_text}\n\nQuestion: {question}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )
+    return "".join(parts)
 
 
 def _strip_leaked_prompt(text: str) -> str:
@@ -1243,19 +1271,25 @@ def build_direct_prompt(
     question: str,
     history: list[tuple[str, str]] | None = None,
     summary: str = "",
+    longer_answers: bool = False,
 ) -> str:
     """
     Build a plain conversational prompt using Qwen 2.5's ChatML format.
     summary : compressed plain-text of older turns (no LLM call, first sentences).
     history : last 3 verbatim (user, assistant) pairs.
     """
-    system_msg = (
-        "You are a knowledgeable and direct AI assistant. Answer the user's question clearly and concisely.\n"
-        "If you need to analyze the question, determine complexity, or plan your response, wrap your reasoning inside <think> and </think> tags before writing your final answer.\n"
-        "If the question is simple, provide a short 1-2 sentence answer. If the question is complex, provide a detailed multi-paragraph answer.\n"
-        "Write your final answer in plain text paragraphs. Do not use bullet points or numbered lists.\n"
-        "Do not repeat the question. Just give the answer."
-    )
+    if longer_answers:
+        system_msg = (
+            "You are a highly capable AI assistant. Provide a highly detailed, comprehensive, and exhaustive answer.\n"
+            "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
+            "Do not repeat the question."
+        )
+    else:
+        system_msg = (
+            "You are a direct AI assistant. Answer clearly and concisely.\n"
+            "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
+            "Do not repeat the question."
+        )
     # Append compressed older context to system message so it takes fewer
     # tokens than full ChatML turns but still informs the model.
     if summary.strip():

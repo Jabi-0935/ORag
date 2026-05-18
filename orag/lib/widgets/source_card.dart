@@ -5,22 +5,26 @@ import '../theme/app_theme.dart';
 /// Collapsible card showing which documents were used to answer a RAG query.
 class SourceCard extends StatefulWidget {
   final List<SourceAttribution> sources;
+  final bool initiallyExpanded;
 
-  const SourceCard({super.key, required this.sources});
+  const SourceCard({
+    super.key,
+    required this.sources,
+    this.initiallyExpanded = false,
+  });
 
   @override
   State<SourceCard> createState() => _SourceCardState();
 }
 
-class _SourceCardState extends State<SourceCard> {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
 
   @override
   Widget build(BuildContext context) {
     if (widget.sources.isEmpty) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(left: 50, right: 48, top: 2, bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Container(
         decoration: BoxDecoration(
           color: AppColors.surface,

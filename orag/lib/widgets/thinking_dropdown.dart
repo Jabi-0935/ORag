@@ -5,8 +5,13 @@ import '../theme/app_theme.dart';
 /// Only rendered when [thinkingText] is non-empty.
 class ThinkingDropdown extends StatefulWidget {
   final String thinkingText;
+  final bool initiallyExpanded;
 
-  const ThinkingDropdown({super.key, required this.thinkingText});
+  const ThinkingDropdown({
+    super.key,
+    required this.thinkingText,
+    this.initiallyExpanded = false,
+  });
 
   @override
   State<ThinkingDropdown> createState() => _ThinkingDropdownState();
@@ -14,7 +19,7 @@ class ThinkingDropdown extends StatefulWidget {
 
 class _ThinkingDropdownState extends State<ThinkingDropdown>
     with SingleTickerProviderStateMixin {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
   late final AnimationController _controller;
   late final Animation<double> _fadeAnim;
 
@@ -23,6 +28,7 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
     super.initState();
     _controller = AnimationController(
       vsync: this,
+      value: widget.initiallyExpanded ? 1.0 : 0.0,
       duration: const Duration(milliseconds: 250),
     );
     _fadeAnim = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
@@ -48,7 +54,7 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
     if (widget.thinkingText.isEmpty) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(left: 50, right: 48, top: 2, bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Container(
         decoration: BoxDecoration(
           color: AppColors.surface,

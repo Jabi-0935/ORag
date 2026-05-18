@@ -5,6 +5,9 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:intl/intl.dart';
 import '../models/chat_message.dart';
 import '../theme/app_theme.dart';
+import 'thinking_dropdown.dart';
+import 'context_chunks_card.dart';
+import 'source_card.dart';
 
 /// A styled chat bubble for user or AI messages.
 /// AI messages render markdown (bold, code, lists, headings).
@@ -75,12 +78,16 @@ class _ChatBubbleState extends State<ChatBubble> {
           if (!isUser) _avatar(isUser),
           if (!isUser) const SizedBox(width: 8),
           Flexible(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _bubble(isUser),
-                // Timestamp
-                Padding(
+            child: IntrinsicWidth(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Align(
+                    alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+                    child: _bubble(isUser),
+                  ),
+                  // Timestamp
+                  Padding(
                   padding: const EdgeInsets.only(top: 3, left: 4, right: 4),
                   child: Text(
                     DateFormat.jm().format(widget.message.timestamp),
@@ -90,67 +97,81 @@ class _ChatBubbleState extends State<ChatBubble> {
                     ),
                   ),
                 ),
-                // Action row: TTS + Copy — only on complete assistant messages
+                // Action row: TTS + Copy + Metadata — only on complete assistant messages
                 if (!isUser && widget.message.text.isNotEmpty && !widget.message.isStreaming)
                   Padding(
-                    padding: const EdgeInsets.only(top: 2, left: 4),
+                    padding: const EdgeInsets.only(top: 2, left: 4, right: 4),
                     child: Row(
-                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        // TTS button
-                        GestureDetector(
-                          onTap: _toggleTts,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                _isSpeaking
-                                    ? Icons.stop_circle_rounded
-                                    : Icons.volume_up_rounded,
-                                size: 16,
-                                color: _isSpeaking
-                                    ? AppColors.error
-                                    : AppColors.textDim.withValues(alpha: 0.6),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // TTS button
+                            GestureDetector(
+                              onTap: _toggleTts,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    _isSpeaking
+                                        ? Icons.stop_circle_rounded
+                                        : Icons.volume_up_rounded,
+                                    size: 16,
+                                    color: _isSpeaking
+                                        ? AppColors.error
+                                        : AppColors.textDim.withValues(alpha: 0.6),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    _isSpeaking ? 'Stop' : 'Listen',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: _isSpeaking
+                                          ? AppColors.error
+                                          : AppColors.textDim.withValues(alpha: 0.6),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _isSpeaking ? 'Stop' : 'Listen',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: _isSpeaking
-                                      ? AppColors.error
-                                      : AppColors.textDim.withValues(alpha: 0.6),
-                                ),
+                            ),
+                            const SizedBox(width: 14),
+                            // Copy button
+                            GestureDetector(
+                              onTap: () {
+                                Clipboard.setData(
+                                    ClipboardData(text: widget.message.text));
+                                HapticFeedback.lightImpact();
+                              },
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.copy_rounded,
+                                    size: 15,
+                                    color: AppColors.textDim.withValues(alpha: 0.6),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Copy',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: AppColors.textDim.withValues(alpha: 0.6),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 14),
-                        // Copy button
-                        GestureDetector(
-                          onTap: () {
-                            Clipboard.setData(
-                                ClipboardData(text: widget.message.text));
-                            HapticFeedback.lightImpact();
-                          },
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.copy_rounded,
-                                size: 15,
-                                color: AppColors.textDim.withValues(alpha: 0.6),
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Copy',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.textDim.withValues(alpha: 0.6),
-                                ),
-                              ),
-                            ],
-                          ),
+                        // Metadata icons
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (widget.message.hasThinking) _buildMetadataIcon(Icons.lightbulb_outline, 'Thinking', _showThinkingModal),
+                            if (widget.message.hasParentChunks) _buildMetadataIcon(Icons.description_outlined, 'Context', _showContextModal),
+                            if (widget.message.hasSources) _buildMetadataIcon(Icons.folder_open_outlined, 'Sources', _showSourceModal),
+                          ],
                         ),
                       ],
                     ),
@@ -345,6 +366,114 @@ class _ChatBubbleState extends State<ChatBubble> {
           color: AppColors.primary,
           decoration: TextDecoration.underline,
         ),
+      ),
+    );
+  }
+
+  Widget _buildMetadataIcon(IconData icon, String tooltip, VoidCallback onTap) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 14),
+      child: Tooltip(
+        message: tooltip,
+        child: GestureDetector(
+          onTap: () {
+            HapticFeedback.lightImpact();
+            onTap();
+          },
+          child: Icon(
+            icon,
+            size: 17,
+            color: AppColors.textDim.withValues(alpha: 0.8),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showThinkingModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _buildModalContainer(
+        title: 'Model Thinking',
+        icon: Icons.lightbulb_outline,
+        child: ThinkingDropdown(thinkingText: widget.message.thinkingText, initiallyExpanded: true),
+      ),
+    );
+  }
+
+  void _showContextModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _buildModalContainer(
+        title: 'Context Used',
+        icon: Icons.description_outlined,
+        child: ContextChunksCard(chunks: widget.message.parentChunks, initiallyExpanded: true),
+      ),
+    );
+  }
+
+  void _showSourceModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _buildModalContainer(
+        title: 'Sources',
+        icon: Icons.folder_open_outlined,
+        child: SourceCard(sources: widget.message.sources, initiallyExpanded: true),
+      ),
+    );
+  }
+
+  Widget _buildModalContainer({required String title, required IconData icon, required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.only(top: 12),
+      decoration: const BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.divider,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Icon(icon, size: 20, color: AppColors.primary),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Flexible(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: child,
+            ),
+          ),
+        ],
       ),
     );
   }
