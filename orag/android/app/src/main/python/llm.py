@@ -405,9 +405,9 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
                 on_progress(1.0, "AI engine ready!")
             return True
         profile = get_memory_profile()
-        # Use optimal_threads() (half of physical cores) for batch processing
+        # Use _optimal_threads() (half of physical cores) for batch processing
         # This prevents slow LITTLE cores from bottlenecking the fast performance cores.
-        batch_threads = optimal_threads()
+        batch_threads = _optimal_threads()
         cmd = [
             str(exe),
             "--model", model_path,
