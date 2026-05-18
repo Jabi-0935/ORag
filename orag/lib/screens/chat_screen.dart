@@ -8,7 +8,10 @@ import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/chat_input_bar.dart';
+import '../widgets/context_chunks_card.dart';
+import '../widgets/document_drawer.dart';
 import '../widgets/init_overlay.dart';
+import '../widgets/thinking_dropdown.dart';
 import 'settings_screen.dart';
 import '../widgets/source_card.dart';
 import '../widgets/typing_indicator.dart';
@@ -133,6 +136,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: AppColors.background,
+      endDrawer: chatState.initDone
+          ? DocumentDrawer(
+              platform: ref.read(chatControllerProvider.notifier).platform,
+            )
+          : null,
       body: Stack(
         children: [
           // Main chat UI — only built after init completes
@@ -227,6 +235,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             ),
           ),
 
+          // Documents button
+          IconButton(
+            icon: const Icon(Icons.folder_open_rounded, size: 21),
+            tooltip: 'Documents',
+            onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+            color: AppColors.textSecondary,
+          ),
+
           // Settings button
           IconButton(
             icon: const Icon(Icons.settings_outlined, size: 21),
@@ -269,12 +285,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               color: isRag ? AppColors.secondary : AppColors.primary,
             ),
             const SizedBox(width: 5),
-            Text(
-              isRag ? 'Document Mode' : 'AI Chat',
-              style: TextStyle(
-                color: isRag ? AppColors.secondary : AppColors.primary,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
+            Flexible(
+              child: Text(
+                isRag
+                    ? (chatState.activeDocumentName != null
+                        ? chatState.activeDocumentName!.length > 18
+                            ? '📄 ${chatState.activeDocumentName!.substring(0, 16)}…'
+                            : '📄 ${chatState.activeDocumentName}'
+                        : 'Document Mode')
+                    : 'AI Chat',
+                style: TextStyle(
+                  color: isRag ? AppColors.secondary : AppColors.primary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
@@ -310,10 +336,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ChatBubble(message: msg),
-            // Show source attribution card below AI messages with sources
-            if (msg.isAssistant && msg.hasSources && !msg.isStreaming)
-              SourceCard(sources: msg.sources),
+            // Slide+fade entrance animation for each message
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.0, end: 1.0),
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+              builder: (ctx, val, child) => Opacity(
+                opacity: val,
+                child: Transform.translate(
+                  offset: Offset(0, 12 * (1 - val)),
+                  child: child,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ChatBubble(message: msg),
+                  // 🧠 Thinking dropdown — shown when Qwen3 produced a <think> block
+                  if (msg.isAssistant && msg.hasThinking && !msg.isStreaming)
+                    ThinkingDropdown(thinkingText: msg.thinkingText),
+                  // 📄 Context chunks — shown in Document mode with parent chunk texts
+                  if (msg.isAssistant && msg.hasParentChunks && !msg.isStreaming)
+                    ContextChunksCard(chunks: msg.parentChunks),
+                  // 🔗 Source attribution card (doc name + preview)
+                  if (msg.isAssistant && msg.hasSources && !msg.isStreaming)
+                    SourceCard(sources: msg.sources),
+                ],
+              ),
+            ),
           ],
         );
       },
@@ -347,6 +397,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   Widget _buildEmptyState(ChatState chatState) {
+    final isRag = chatState.ragMode;
+    final prompts = isRag
+        ? [
+            'What is this document about?',
+            'List the key points',
+            'Summarize for me',
+          ]
+        : [
+            'Explain a concept to me',
+            'Help me brainstorm ideas',
+            'Summarize a topic',
+          ];
+
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -379,7 +442,53 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               fontWeight: FontWeight.w600,
             ),
           ),
+          const SizedBox(height: 6),
+          Text(
+            isRag ? 'Ask anything about your document' : 'Start a conversation',
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 24),
+          // Tappable example prompt chips
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: prompts.map((label) => _promptChip(label)).toList(),
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _promptChip(String label) {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        _controller.text = label;
+        _controller.selection = TextSelection.fromPosition(
+          TextPosition(offset: label.length),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceLight,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppColors.divider),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 13,
+          ),
+        ),
       ),
     );
   }

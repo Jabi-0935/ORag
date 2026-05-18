@@ -228,8 +228,8 @@ def _compute_profile() -> dict:
         return {
             "profile": "MEDIUM",
             "total_ram_gb": total,
-            "n_ctx": 1024,
-            "max_tokens": 512,
+            "n_ctx": 2048,
+            "max_tokens": 768,
             "n_threads": optimal_threads(),
             "nomic_ctx": 384,
             "nomic_lazy": False,       # Eager: load Nomic at startup
@@ -242,8 +242,8 @@ def _compute_profile() -> dict:
     return {
         "profile": "HIGH",
         "total_ram_gb": total,
-        "n_ctx": 2048,
-        "max_tokens": 512,
+        "n_ctx": 4096,
+        "max_tokens": 1024,
         "n_threads": optimal_threads(),
         "nomic_ctx": 512,
         "nomic_lazy": False,

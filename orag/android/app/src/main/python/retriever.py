@@ -175,6 +175,31 @@ class HybridRetriever:
         else:
             self._avg_dl = 1.0
 
+    def remove_doc(self, doc_id: int) -> None:
+        """
+        BE-4: Incrementally remove one document's chunks without a full DB reload.
+        O(N) in-memory filter — much faster than reload() for single-doc deletes.
+        """
+        self._chunks = [c for c in self._chunks if c['doc_id'] != doc_id]
+        # Rebuild O(1) indexes from the filtered list
+        self._chunk_index = {c['id']: i for i, c in enumerate(self._chunks)}
+        self._text_index = {
+            (c['doc_id'], c['text'].strip()): i
+            for i, c in enumerate(self._chunks)
+        }
+        if self._chunks:
+            total = sum(len(c['tokens']) for c in self._chunks)
+            self._avg_dl = total / len(self._chunks)
+        else:
+            self._avg_dl = 1.0
+        # Remove embeddings for the deleted doc's chunks
+        valid_ids = {c['id'] for c in self._chunks}
+        with self._embed_lock:
+            self._embeddings = {
+                k: v for k, v in self._embeddings.items() if k in valid_ids
+            }
+            self._embed_ready = bool(self._embeddings)
+
     def _compute_embeddings(self) -> None:
         """
         Background thread: compute embeddings for chunks that don't have
@@ -294,15 +319,15 @@ class HybridRetriever:
         """
         Returns top_k (chunk_id, cosine_score) using cached embeddings.
         Uses Nomic's search_query: prefix for proper embedding space.
-        Reads embeddings under lock without copying the entire dict.
+
+        BE-5: NumPy vectorized fast-path for cosine similarity.
+        Falls back to pure-Python if numpy is unavailable.
         """
         with self._embed_lock:
             if not self._embed_ready or not self._embeddings:
                 return []
-            # Read under lock — no dict copy needed since we only read
-            chunk_ids_with_emb = [
-                (cid, emb) for cid, emb in self._embeddings.items()
-            ]
+            chunk_ids = list(self._embeddings.keys())
+            embeddings_snapshot = [self._embeddings[cid] for cid in chunk_ids]
 
         try:
             from llm import get_embedding
@@ -310,11 +335,32 @@ class HybridRetriever:
             if q_emb is None:
                 return []
 
+            # BE-5: NumPy vectorized cosine similarity (10-50x faster than pure Python)
+            try:
+                import numpy as np
+                matrix = np.array(embeddings_snapshot, dtype=np.float32)
+                qvec = np.array(q_emb, dtype=np.float32)
+                # Normalize rows of matrix and query vector
+                row_norms = np.linalg.norm(matrix, axis=1, keepdims=True).clip(min=1e-9)
+                q_norm = np.linalg.norm(qvec).clip(min=1e-9)
+                matrix_normed = matrix / row_norms
+                qvec_normed = qvec / q_norm
+                sims = matrix_normed @ qvec_normed
+                # Get top_k indices efficiently with argpartition
+                if len(chunk_ids) <= top_k:
+                    top_indices = np.argsort(sims)[::-1]
+                else:
+                    top_indices = np.argpartition(sims, -top_k)[-top_k:]
+                    top_indices = top_indices[np.argsort(sims[top_indices])[::-1]]
+                return [(chunk_ids[i], float(sims[i])) for i in top_indices]
+            except ImportError:
+                pass  # numpy not available — fall through to pure-Python
+
+            # Pure-Python fallback
             scores = []
-            for cid, chunk_emb in chunk_ids_with_emb:
+            for cid, chunk_emb in zip(chunk_ids, embeddings_snapshot):
                 sim = _cosine_dense(q_emb, chunk_emb)
                 scores.append((cid, sim))
-
             scores.sort(key=lambda x: x[1], reverse=True)
             return scores[:top_k]
         except Exception as e:
@@ -323,15 +369,21 @@ class HybridRetriever:
 
     # --- public query ---
 
-    def query(self, text: str, top_k: int = 4) -> List[Tuple[str, float, int]]:
+    def query(
+        self,
+        text: str,
+        top_k: int = 4,
+        doc_ids: list | None = None,
+    ) -> List[Tuple[str, float, int]]:
         """
         Returns list of (chunk_text, score, doc_id) sorted by relevance.
+        doc_ids: optional list of doc IDs to restrict retrieval to specific documents.
 
         Pipeline:
         1. Run FTS5 BM25 (sparse) and Dense (semantic) in parallel
         2. Merge with Weighted RRF (0.7 dense, 0.3 sparse)
         3. Contextual pruning (drop chunks < 40% of top score)
-        4. Cap at top 2 for minimal LLM prefill latency
+        4. Cap at top_k; optionally filter by doc_ids
         """
         if self.is_empty():
             return []
@@ -375,9 +427,18 @@ class HybridRetriever:
             seen_texts.add(txt)
             top.append((txt, score, chunk["doc_id"]))
 
+        # Filter by allowed doc_ids if specified (zero extra latency)
+        if doc_ids is not None:
+            top = [(txt, score, did) for txt, score, did in top if did in doc_ids]
+
         return top
 
-    def query_with_expansion(self, text: str, top_k: int = 2) -> List[Tuple[str, float, int]]:
+    def query_with_expansion(
+        self,
+        text: str,
+        top_k: int = 2,
+        doc_ids: list | None = None,
+    ) -> List[Tuple[str, float, int]]:
         """
         Small-to-Big query: retrieve small chunks, then expand to parent chunks.
 
@@ -388,7 +449,7 @@ class HybridRetriever:
         if self.is_empty():
             return []
 
-        small_results = self.query(text, top_k=top_k)
+        small_results = self.query(text, top_k=top_k, doc_ids=doc_ids)
         if not small_results:
             return []
 

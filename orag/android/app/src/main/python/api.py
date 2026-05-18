@@ -2,6 +2,7 @@ import threading
 import json
 import os
 import time
+import hashlib
 
 # Deferred imports to prevent module-level hangs
 pipeline = None
@@ -14,7 +15,35 @@ _init_lock = threading.Lock()
 _is_generating = False
 _stop_flag = False
 _conversation_history = []
+_conversation_summary = ""   # compressed summary of turns older than MAX_TURNS
 MAX_TURNS = 5
+_server_confirmed_ready = False  # cached after first successful health check
+
+# ---- Response cache (Improvement #3) ----
+_response_cache: dict = {}          # key -> JSON result string
+_CACHE_MAX_SIZE = 20                # keep last 20 unique responses (FIFO)
+_cache_lock = threading.Lock()
+
+
+def _cache_key(query: str, history_len: int) -> str:
+    """Fast 16-char hash key — includes history length so follow-ups don't collide."""
+    raw = f"{query.strip().lower()}|histlen={history_len}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _try_cache(query: str, history: list):
+    """Return cached result string, or None on miss."""
+    with _cache_lock:
+        return _response_cache.get(_cache_key(query, len(history)))
+
+
+def _store_cache(query: str, history: list, result: str) -> None:
+    """Store result in FIFO cache, evicting oldest entry when full."""
+    with _cache_lock:
+        key = _cache_key(query, len(history))
+        if len(_response_cache) >= _CACHE_MAX_SIZE:
+            _response_cache.pop(next(iter(_response_cache)))
+        _response_cache[key] = result
 
 # ---- Progress callback holder (set from Kotlin) ----
 _progress_callback = None
@@ -42,10 +71,32 @@ def _emit_progress(state, progress, message):
             print(f"[API] progress callback error: {e}")
 
 
+def _make_simple_summary(turns: list) -> str:
+    """
+    Improvement #5: Zero-latency summary — extracts first sentence from each
+    dropped turn instead of making an LLM call. Keeps the model aware of older
+    context without any extra latency.
+    """
+    parts = []
+    for q, a in turns:
+        q_short = (q.split(".")[0] + ".").strip()[:120]
+        a_short = (a.split(".")[0] + ".").strip()[:180]
+        parts.append(f"User: {q_short} Assistant: {a_short}")
+    return " | ".join(parts)
+
+
 def trim_history():
-    """Trim history to MAX_TURNS and enforce character budget."""
-    global _conversation_history
+    """Trim history to MAX_TURNS, compressing dropped turns into a rolling summary."""
+    global _conversation_history, _conversation_summary
     if len(_conversation_history) > MAX_TURNS:
+        to_drop = _conversation_history[:-MAX_TURNS]
+        dropped_summary = _make_simple_summary(to_drop)
+        # Rolling append to existing summary, capped at 400 chars
+        if _conversation_summary:
+            _conversation_summary = f"{_conversation_summary} | {dropped_summary}"
+        else:
+            _conversation_summary = dropped_summary
+        _conversation_summary = _conversation_summary[-400:]
         _conversation_history = _conversation_history[-MAX_TURNS:]
     # Enforce character budget to prevent context window overflow
     try:
@@ -63,8 +114,9 @@ def trim_history():
 
 
 def clear_memory():
-    global _conversation_history
+    global _conversation_history, _conversation_summary
     _conversation_history = []
+    _conversation_summary = ""
 
 
 def stop_generation():
@@ -73,6 +125,15 @@ def stop_generation():
 
 
 def wait_for_server():
+    """Wait for the llama-server health endpoint.
+    Short-circuits after first confirmed healthy response to avoid
+    redundant polling on every subsequent chat call (BE-1).
+    Fires a background KV-cache pre-warm after the server is first confirmed
+    healthy so the very first user query is as fast as all subsequent ones.
+    """
+    global _server_confirmed_ready
+    if _server_confirmed_ready:
+        return True
     import urllib.request
     import time
     from config import QWEN_SERVER_PORT
@@ -80,11 +141,49 @@ def wait_for_server():
         try:
             r = urllib.request.urlopen(f"http://127.0.0.1:{QWEN_SERVER_PORT}/health", timeout=2)
             if r.getcode() == 200:
+                _server_confirmed_ready = True
+                # Fire-and-forget KV cache pre-warm (Improvement #5)
+                threading.Thread(target=_prewarm_kv_cache, daemon=True).start()
                 return True
         except Exception:
             pass
         time.sleep(1)
     raise RuntimeError("Server not ready")
+
+
+def _prewarm_kv_cache() -> None:
+    """
+    Improvement #5: Send a silent 1-token generation immediately after the
+    server becomes healthy.  This loads model weights into CPU caches and
+    pre-computes the system-prompt KV cache so the FIRST real user query
+    feels as fast as all subsequent ones.
+
+    Runs in a daemon thread — never blocks startup or the chat flow.
+    """
+    import urllib.request
+    from config import QWEN_SERVER_PORT
+    from llm import build_direct_prompt
+
+    time.sleep(1.5)   # small grace period after health confirms ready
+
+    prewarm_prompt = build_direct_prompt("Hello", history=[], summary="")
+    payload = json.dumps({
+        "prompt": prewarm_prompt,
+        "n_predict": 1,
+        "temperature": 0.0,
+        "cache_prompt": True,   # keep KV in server cache after this call
+    }).encode()
+    url = f"http://127.0.0.1:{QWEN_SERVER_PORT}/completion"
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+        print("[API] KV cache pre-warmed — first query will be fast.")
+    except Exception as e:
+        print(f"[API] Pre-warm skipped (non-fatal): {e}")
 
 
 def ensure_ready(model_path=None):
@@ -250,11 +349,13 @@ def chat(query):
         ok, response = pipeline.chat_direct(
             question=query,
             history=_conversation_history,
-            summary=""
+            summary=_conversation_summary
         )
 
         if ok:
-            _conversation_history.append((query, response))
+            # Idempotency guard: skip duplicate turns from double-submit (BE-2)
+            if not _conversation_history or _conversation_history[-1] != (query, response):
+                _conversation_history.append((query, response))
 
         print("[CHAT] Response received")
         return response if ok else f"ERROR: {response}"
@@ -288,21 +389,24 @@ def chat_stream(query, token_callback):
 
         trim_history()
         global pipeline
-        ok, response = pipeline.chat_direct(
+        ok, response, thinking = pipeline.chat_direct(
             question=query,
             history=_conversation_history,
-            summary="",
+            summary=_conversation_summary,
             stream_cb=_on_token,
         )
 
         if ok:
-            _conversation_history.append((query, response))
+            # Idempotency guard: skip duplicate turns from double-submit (BE-2)
+            if not _conversation_history or _conversation_history[-1] != (query, response):
+                _conversation_history.append((query, response))
 
         print("[CHAT-STREAM] Response received")
-        return response if ok else f"ERROR: {response}"
+        result_str = response if ok else f"ERROR: {response}"
+        return json.dumps({"answer": result_str, "thinking": thinking})
 
     except Exception as e:
-        return f"ERROR: {str(e)}"
+        return json.dumps({"answer": f"ERROR: {str(e)}", "thinking": ""})
     finally:
         _is_generating = False
 
@@ -364,11 +468,27 @@ def clear_docs():
 # ------------------------------------------------------------------ #
 
 def ask_rag(query, token_callback):
-    """RAG streaming query with source attribution."""
+    """RAG streaming query with source attribution and response caching."""
     global _is_generating, _stop_flag
 
     if _is_generating:
-        return json.dumps({"answer": "Please wait, processing previous request...", "sources": []})
+        return json.dumps({"answer": "Please wait, processing previous request...", "sources": [], "thinking": "", "parent_chunks": []})
+
+    # --- Cache hit: skip retrieval + LLM entirely (Improvement #3) ---
+    cached = _try_cache(query, _conversation_history)
+    if cached:
+        print("[RAG-STREAM] Cache hit — returning instantly")
+        try:
+            data = json.loads(cached)
+            # Re-stream tokens so the UI animation still plays
+            for word in data.get("answer", "").split():
+                try:
+                    token_callback.invoke(word + " ")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return cached
 
     _is_generating = True
     _stop_flag = False
@@ -385,19 +505,28 @@ def ask_rag(query, token_callback):
                 print(f"[RAG-STREAM] callback error: {e}")
 
         global pipeline
-        ok, response, sources = pipeline.ask(
+        ok, response, sources, thinking, parent_chunks = pipeline.ask(
             question=query,
+            history=_conversation_history,
             stream_cb=_on_token,
         )
 
         print("[RAG-STREAM] Response received")
-        return json.dumps({
+        result_json = json.dumps({
             "answer": response if ok else f"ERROR: {response}",
             "sources": sources,
+            "thinking": thinking,
+            "parent_chunks": parent_chunks,
         })
 
+        # Store in cache only on success
+        if ok:
+            _store_cache(query, _conversation_history, result_json)
+
+        return result_json
+
     except Exception as e:
-        return json.dumps({"answer": f"ERROR: {str(e)}", "sources": []})
+        return json.dumps({"answer": f"ERROR: {str(e)}", "sources": [], "thinking": "", "parent_chunks": []})
     finally:
         _is_generating = False
 

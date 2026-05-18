@@ -159,9 +159,25 @@ def tokenise(text: str) -> List[str]:
 # ------------------------------------------------------------------ #
 
 def _split_sentences(text: str) -> List[str]:
-    """Naive sentence splitter — avoids pulling in NLTK."""
-    parts = re.split(r"(?<=[.!?])\s+", text.strip())
-    return [p.strip() for p in parts if p.strip()]
+    """Sentence splitter that avoids breaking on common abbreviations.
+
+    Uses a negative lookbehind so that 'Dr. Smith', 'e.g. this', 'U.S. Army',
+    'Ph.D. program' etc. are not incorrectly split into separate sentences.
+    Falls back gracefully if the regex engine rejects the pattern.
+    """
+    try:
+        # Negative lookbehind: don't split after known abbreviations
+        abbrev_pattern = (
+            r'(?<!'
+            r'(?:Dr|Mr|Mrs|Ms|Prof|St|vs|etc|e\.g|i\.e|U\.S|Ph\.D|Fig|No|Vol|approx|dept)'
+            r')'
+        )
+        parts = re.split(abbrev_pattern + r'(?<=[.!?])\s+(?=[A-Z\"\'])', text.strip())
+        return [p.strip() for p in parts if p.strip()]
+    except re.error:
+        # Fallback to naive split if lookbehind fails
+        parts = re.split(r'(?<=[.!?])\s+', text.strip())
+        return [p.strip() for p in parts if p.strip()]
 
 
 def chunk_text(text: str, preamble_chars: int = 200) -> List[str]:
@@ -189,6 +205,56 @@ def chunk_text(text: str, preamble_chars: int = 200) -> List[str]:
             break
         start += CHUNK_SIZE - CHUNK_OVERLAP
     return chunks
+
+
+def chunk_text_semantic(
+    text: str,
+    target_size: int = CHUNK_SIZE,
+    preamble_chars: int = 200,
+) -> List[str]:
+    """
+    Sentence-boundary chunker — never cuts mid-sentence.
+
+    Groups sentences until ~target_size words is reached, then starts a new
+    chunk keeping the last 2 sentences as overlap for context continuity.
+    Falls back to word-split chunking if sentence splitting yields nothing.
+    """
+    preamble = text[:preamble_chars].strip()
+    sentences = _split_sentences(text)
+    if not sentences:
+        return chunk_text(text, preamble_chars)  # graceful fallback
+
+    max_size = int(target_size * 1.5)  # allow up to 150 words before forcing a split
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len: int = 0
+
+    for sent in sentences:
+        sent_len = len(sent.split())
+        if current_len + sent_len > max_size and current:
+            chunk_body = " ".join(current)
+            chunk = (
+                f"[Document Info: {preamble}]\n\n{chunk_body}"
+                if chunks and preamble
+                else chunk_body
+            )
+            chunks.append(chunk)
+            # Overlap: keep last 2 sentences for continuity
+            current = current[-2:]
+            current_len = sum(len(s.split()) for s in current)
+        current.append(sent)
+        current_len += sent_len
+
+    if current:
+        chunk_body = " ".join(current)
+        chunk = (
+            f"[Document Info: {preamble}]\n\n{chunk_body}"
+            if chunks and preamble
+            else chunk_body
+        )
+        chunks.append(chunk)
+
+    return chunks if chunks else [text]
 
 
 # ------------------------------------------------------------------ #
@@ -239,7 +305,7 @@ def process_document(path: str) -> List[dict]:
         {chunk_idx, text, tokens, tfidf_vec}
     """
     raw_text   = extract_text(path)
-    raw_chunks = chunk_text(raw_text)
+    raw_chunks = chunk_text_semantic(raw_text)
     token_lists = [tokenise(c) for c in raw_chunks]
     tfidf_vecs, _ = compute_tfidf_vecs(token_lists)
 
@@ -303,7 +369,7 @@ def process_document_hierarchical(path: str) -> Tuple[List[dict], List[dict]]:
     ]
 
     # Generate small chunks
-    raw_smalls = chunk_text(raw_text)
+    raw_smalls = chunk_text_semantic(raw_text)
     token_lists = [tokenise(c) for c in raw_smalls]
     tfidf_vecs, _ = compute_tfidf_vecs(token_lists)
 

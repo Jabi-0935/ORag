@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:intl/intl.dart';
@@ -89,34 +90,69 @@ class _ChatBubbleState extends State<ChatBubble> {
                     ),
                   ),
                 ),
-                // TTS speaker button for assistant messages
+                // Action row: TTS + Copy — only on complete assistant messages
                 if (!isUser && widget.message.text.isNotEmpty && !widget.message.isStreaming)
                   Padding(
                     padding: const EdgeInsets.only(top: 2, left: 4),
-                    child: GestureDetector(
-                      onTap: _toggleTts,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _isSpeaking ? Icons.stop_circle_rounded : Icons.volume_up_rounded,
-                            size: 16,
-                            color: _isSpeaking
-                                ? AppColors.error
-                                : AppColors.textDim.withValues(alpha: 0.6),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // TTS button
+                        GestureDetector(
+                          onTap: _toggleTts,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _isSpeaking
+                                    ? Icons.stop_circle_rounded
+                                    : Icons.volume_up_rounded,
+                                size: 16,
+                                color: _isSpeaking
+                                    ? AppColors.error
+                                    : AppColors.textDim.withValues(alpha: 0.6),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _isSpeaking ? 'Stop' : 'Listen',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: _isSpeaking
+                                      ? AppColors.error
+                                      : AppColors.textDim.withValues(alpha: 0.6),
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _isSpeaking ? 'Stop' : 'Listen',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: _isSpeaking
-                                  ? AppColors.error
-                                  : AppColors.textDim.withValues(alpha: 0.6),
-                            ),
+                        ),
+                        const SizedBox(width: 14),
+                        // Copy button
+                        GestureDetector(
+                          onTap: () {
+                            Clipboard.setData(
+                                ClipboardData(text: widget.message.text));
+                            HapticFeedback.lightImpact();
+                          },
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.copy_rounded,
+                                size: 15,
+                                color: AppColors.textDim.withValues(alpha: 0.6),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Copy',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: AppColors.textDim.withValues(alpha: 0.6),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
               ],

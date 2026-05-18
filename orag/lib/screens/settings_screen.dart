@@ -124,6 +124,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 12),
                       children: [
+                        _buildEngineStatusSection(),
+                        const SizedBox(height: 16),
                         _buildResourceMonitorSection(),
                         const SizedBox(height: 16),
                         _buildAboutSection(),
@@ -327,6 +329,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return const Divider(color: AppColors.divider, height: 1);
   }
 
+  // ---- Engine Status ----
+
+  Widget _buildEngineStatusSection() {
+    final qwenReady = _health['qwen_ready'] as bool? ?? false;
+    final nomicReady = _health['nomic_ready'] as bool? ?? false;
+    final docCount = _health['doc_count'] as int? ?? 0;
+    final chunkCount = _health['chunk_count'] as int? ?? 0;
+    final backend = _health['backend'] as String? ?? 'On-device';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader(
+            'Engine Status', Icons.memory_rounded, AppColors.primary),
+        _buildCard(children: [
+          _buildRow('Backend', backend),
+          _divider(),
+          _buildRow(
+            'Qwen LLM',
+            '',
+            trailing: _statusDot(qwenReady),
+          ),
+          _divider(),
+          _buildRow(
+            'Nomic Embeddings',
+            '',
+            trailing: _statusDot(nomicReady),
+          ),
+          _divider(),
+          _buildRow('Documents Loaded', '$docCount'),
+          _divider(),
+          _buildRow('Total Chunks', '$chunkCount'),
+        ]),
+      ],
+    );
+  }
+
   // ---- Resource Monitor ----
 
   Widget _buildResourceMonitorSection() {
@@ -399,10 +438,5 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
-  }
-
-  String _capitalize(String s) {
-    if (s.isEmpty) return s;
-    return s[0].toUpperCase() + s.substring(1).toLowerCase();
   }
 }

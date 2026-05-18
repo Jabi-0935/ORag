@@ -813,6 +813,12 @@ class LlamaCppModel:
         self._lock       = threading.Lock()
         self._backend    = "none"   # "llama_cpp"|"ollama"|"llama_server"|"none"
         self._ollama_name = ""
+        self._last_thinking: str = ""  # raw <think> block from last generate call
+
+    @property
+    def last_thinking(self) -> str:
+        """Return the raw thinking text extracted from the last generate() call."""
+        return self._last_thinking
 
     # ---------------------------------------------------------------- #
     #  Loading                                                           #
@@ -978,8 +984,10 @@ class LlamaCppModel:
         if think_filter is not None:
             think_filter.flush()
 
-        # Strip thinking blocks from the full returned string too
-        return _strip_thinking(raw)
+        # Strip thinking blocks (captures the thinking text), then sanitize
+        cleaned, thinking = _strip_thinking(raw)
+        self._last_thinking = thinking
+        return _strip_leaked_prompt(cleaned)
 
     def _gen_llama_cpp(self, prompt, max_tokens, temp, top_p, stream_cb):
         with self._lock:
@@ -1039,18 +1047,29 @@ class LlamaCppModel:
 #  Thinking-token filter                                               #
 # ------------------------------------------------------------------ #
 
-def _strip_thinking(text: str) -> str:
+def _strip_thinking(text: str) -> tuple:
     """
     Remove internal reasoning blocks that thinking models emit before
     the real answer.  Handles several common tag styles.
+
+    Returns (cleaned_text, thinking_text) so callers can display
+    the model's reasoning in the UI if desired.
     """
-    # Standard <think>...</think> (Qwen, DeepSeek, GLM thinking variants)
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    thinking_parts: list = []
+
+    def _capture(m):
+        thinking_parts.append(m.group(1).strip())
+        return ''
+
+    # Standard <think>...</think> (Qwen3, DeepSeek, GLM thinking variants)
+    text = re.sub(r'<think>(.*?)</think>', _capture, text, flags=re.DOTALL)
     # Pipe-delimited variants  <|think|>...</|think|>
-    text = re.sub(r'<\|think\|>.*?</\|think\|>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<\|think\|>(.*?)</\|think\|>', _capture, text, flags=re.DOTALL)
     # Some models wrap reasoning in triple-backtick reasoning blocks
-    text = re.sub(r'```reasoning.*?```', '', text, flags=re.DOTALL)
-    return text.strip()
+    text = re.sub(r'```reasoning(.*?)```', _capture, text, flags=re.DOTALL)
+
+    thinking_text = '\n\n'.join(p for p in thinking_parts if p)
+    return text.strip(), thinking_text
 
 
 class _ThinkingStreamFilter:
@@ -1134,14 +1153,22 @@ def build_rag_prompt(context_chunks: list[str], question: str) -> str:
 
     ctx_text = "\n\n---\n\n".join(capped)
     system_msg = (
-        "You are a precise document assistant. "
-        "Answer the question using ONLY the provided context. "
-        "Look carefully for names, titles, authors, dates, and specific facts. "
-        "The context chunks will include their source document name like [Source: filename]. "
-        "If you use information from multiple documents, explicitly mention which document you are drawing the conclusion from (e.g. 'Based on document A... and based on document B...'). "
-        "Provide a clear, complete answer. "
-        "If the answer is not in the context, say \"I don't know based on the provided documents.\" "
-        "Do NOT make up information. Do NOT repeat the question."
+        "You are an expert document analyst. Answer questions strictly from the provided context.\n\n"
+        "REASONING: Before answering, identify which part of the context contains the answer "
+        "and whether it is directly stated or must be inferred.\n\n"
+        "CITATION: When using information from a named source, reference it naturally "
+        "(e.g., 'According to [document name]...').\n\n"
+        "CONFLICTS: If sources contradict each other, present both views and note the discrepancy.\n\n"
+        "UNCERTAINTY: If the context is insufficient, state exactly what is missing "
+        "rather than guessing. Say: \"I don't know based on the provided documents.\"\n\n"
+        "STYLE: Use markdown formatting when it genuinely improves readability — "
+        "**bold** for key terms, bullet lists for enumerations or steps, "
+        "`code blocks` for code or technical strings, tables for comparisons. "
+        "For conversational or simple factual answers use plain prose paragraphs. "
+        "Match length to complexity: one or two sentences for simple facts, "
+        "two to three paragraphs for analytical questions. "
+        "No filler phrases like 'Great question' or 'In conclusion'.\n\n"
+        "STRICT RULE: Never invent facts not present in the context. Do not repeat the question."
     )
     return (
         f"<|im_start|>system\n{system_msg}<|im_end|>\n"
@@ -1149,6 +1176,35 @@ def build_rag_prompt(context_chunks: list[str], question: str) -> str:
         f"Context:\n{ctx_text}\n\nQuestion: {question}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )
+
+
+def _strip_leaked_prompt(text: str) -> str:
+    """
+    Post-processing safety net: remove any text that looks like the model
+    echoed back system-prompt structure (numbered analysis steps, constraint
+    lists, etc.) instead of giving a direct answer.
+    """
+    import re
+    # Strip leading numbered sections like "1. Analyze the Request:" blocks
+    # Pattern: one or more "N. Some Header:" sections followed by bullet lists
+    text = re.sub(
+        r'^(\d+\.\s+.+?:\s*\n(?:\s*[\*\-•].*\n)*)+',
+        '',
+        text,
+        flags=re.MULTILINE,
+    )
+    # Strip lines that are clearly leaked constraint/instruction echoes
+    leaked_patterns = [
+        r'^\s*Constraint\s+\d+:.*$',
+        r'^\s*Task:.*$',
+        r'^\s*Analyze the (Request|Context|Question):.*$',
+        r'^\s*Document Source:.*$',
+    ]
+    for pat in leaked_patterns:
+        text = re.sub(pat, '', text, flags=re.MULTILINE | re.IGNORECASE)
+    # Collapse multiple blank lines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 def build_direct_prompt(
@@ -1162,11 +1218,18 @@ def build_direct_prompt(
     history : last 3 verbatim (user, assistant) pairs.
     """
     system_msg = (
-        "You are a knowledgeable, helpful AI assistant. "
-        "Answer the user's question directly and completely. "
-        "Write at least 2-3 sentences. "
-        "Do NOT just repeat the question or echo back one word. "
-        "Reply with only your final answer — no reasoning steps."
+        "You are a knowledgeable and direct AI assistant. "
+        "Answer questions clearly and concisely without preamble.\n\n"
+        "STYLE: Use markdown formatting when it genuinely improves readability — "
+        "**bold** for key terms, bullet lists for steps or enumerations, "
+        "`code blocks` for code or technical strings, tables for comparisons. "
+        "For conversational or simple factual answers use plain prose paragraphs.\n\n"
+        "LENGTH: Match strictly to what the question needs. "
+        "Simple or factual question → one to three sentences. "
+        "Complex or broad question → two to four concise paragraphs.\n\n"
+        "TONE: Be direct and confident. Never pad with filler like 'Great question!', "
+        "'Certainly!', 'Of course!', 'In conclusion', or 'I hope this helps'.\n\n"
+        "Do not repeat or rephrase the question. Answer it immediately."
     )
     # Append compressed older context to system message so it takes fewer
     # tokens than full ChatML turns but still informs the model.

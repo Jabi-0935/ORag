@@ -161,15 +161,15 @@ class _SourceCardState extends State<SourceCard> {
 
 /// Relevance label from wRRF score (which are typically 0.001-0.05).
 String _relevanceLabel(double score) {
-  if (score >= 0.03) return 'High';
-  if (score >= 0.015) return 'Medium';
-  if (score >= 0.005) return 'Low';
+  if (score >= 0.018) return 'High';
+  if (score >= 0.010) return 'Medium';
+  if (score >= 0.004) return 'Low';
   return 'Weak';
 }
 
 Color _relevanceColor(double score) {
-  if (score >= 0.03) return AppColors.success;
-  if (score >= 0.015) return AppColors.primary;
-  if (score >= 0.005) return AppColors.warning;
+  if (score >= 0.018) return AppColors.success;
+  if (score >= 0.010) return AppColors.primary;
+  if (score >= 0.004) return AppColors.warning;
   return AppColors.textDim;
 }

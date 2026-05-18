@@ -233,9 +233,9 @@ class _ChatInputBarState extends State<ChatInputBar> {
     if (widget.isGenerating) return 'Generating…';
     if (_isListening) return 'Listening…';
     if (widget.ragMode) {
-      return widget.activeDocumentName != null 
-          ? '${widget.activeDocumentName} type quit to go ai chat' 
-          : 'Document type quit to go ai chat';
+      return widget.activeDocumentName != null
+          ? 'Ask about ${widget.activeDocumentName}…'
+          : 'Ask a question about your document…';
     }
     return 'Ask me anything…';
   }

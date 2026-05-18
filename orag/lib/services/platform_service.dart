@@ -134,12 +134,12 @@ class PlatformService {
 
   // ---- Chat ----
 
-  /// Start streaming chat. Returns a broadcast stream of token strings.
-  /// The stream emits individual tokens as they arrive.
-  /// When generation is finished, '__STREAM_END__' is emitted then the
-  /// stream effectively finishes (caller should cancel subscription).
-  Stream<String> chatStream(String query) {
-    final controller = StreamController<String>();
+  /// Start streaming chat. Returns a record of (tokenStream, resultFuture).
+  /// Tokens stream as they arrive. The result future resolves with
+  /// {answer, thinking} JSON when generation is complete.
+  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) chatStream(String query) {
+    final tokenController = StreamController<String>();
+    final resultCompleter = Completer<Map<String, dynamic>>();
 
     StreamSubscription? sub;
     sub = _streamChannel.receiveBroadcastStream().listen(
@@ -147,23 +147,33 @@ class PlatformService {
         final token = event.toString();
         if (token == '__STREAM_END__') {
           sub?.cancel();
-          controller.close();
+          tokenController.close();
         } else {
-          controller.add(token);
+          tokenController.add(token);
         }
       },
       onError: (error) {
-        controller.addError(error);
-        controller.close();
+        tokenController.addError(error);
+        tokenController.close();
       },
     );
 
-    _method.invokeMethod('chatStream', {'query': query}).catchError((e) {
-      controller.addError(e);
-      if (!controller.isClosed) controller.close();
+    _method.invokeMethod('chatStream', {'query': query}).then((result) {
+      try {
+        final json = jsonDecode(result as String) as Map<String, dynamic>;
+        resultCompleter.complete(json);
+      } catch (e) {
+        resultCompleter.complete({});
+      }
+    }).catchError((e) {
+      if (!tokenController.isClosed) {
+        tokenController.addError(e);
+        tokenController.close();
+      }
+      resultCompleter.complete({});
     });
 
-    return controller.stream;
+    return (tokens: tokenController.stream, result: resultCompleter.future);
   }
 
   /// Stop current generation.

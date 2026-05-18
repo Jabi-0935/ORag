@@ -255,8 +255,10 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
+    final chat = _platform.chatStream(text);
+
     _chatSub?.cancel();
-    _chatSub = _platform.chatStream(text).listen(
+    _chatSub = chat.tokens.listen(
       _onToken,
       onError: (error) {
         debugPrint('[ChatController] chatStream error: $error');
@@ -269,8 +271,25 @@ class ChatController extends Notifier<ChatState> {
           errorBanner: 'Chat error: $error',
         );
       },
-      onDone: () {
+      onDone: () async {
         _finishTokenStream();
+        // Read thinking from the MethodChannel result JSON
+        try {
+          final resultData = await chat.result;
+          final thinking = resultData['thinking'] as String? ?? '';
+          if (thinking.isNotEmpty) {
+            aiMsg.thinkingText = thinking;
+          }
+          // Use answer from JSON only if no tokens were streamed
+          if (aiMsg.isEmpty) {
+            final answer = resultData['answer'] as String? ?? '';
+            if (answer.isNotEmpty) {
+              aiMsg.text = answer.startsWith('ERROR:') ? '⚠️ $answer' : answer;
+            }
+          }
+        } catch (e) {
+          debugPrint('[ChatController] chatStream result parse error: $e');
+        }
         if (aiMsg.isEmpty) aiMsg.text = '(empty response)';
         aiMsg.isStreaming = false;
         _activeAiMsg = null;
@@ -317,7 +336,7 @@ class ChatController extends Notifier<ChatState> {
       },
       onDone: () async {
         _finishTokenStream();
-        // Get sources from the future
+        // Get sources, thinking, and parent chunks from the future
         try {
           final resultData = await rag.result;
           final srcList =
@@ -325,6 +344,19 @@ class ChatController extends Notifier<ChatState> {
                   [];
           aiMsg.sources =
               srcList.map((m) => SourceAttribution.fromJson(m)).toList();
+
+          // Parse thinking block
+          final thinking = resultData['thinking'] as String? ?? '';
+          if (thinking.isNotEmpty) {
+            aiMsg.thinkingText = thinking;
+          }
+
+          // Parse parent chunks used in RAG context
+          final chunkList =
+              (resultData['parent_chunks'] as List?)?.cast<Map<String, dynamic>>() ??
+                  [];
+          aiMsg.parentChunks =
+              chunkList.map((m) => ParentChunk.fromJson(m)).toList();
 
           // Grab the text answer if no tokens were streamed
           if (aiMsg.isEmpty) {

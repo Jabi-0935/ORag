@@ -232,9 +232,9 @@ class _InitOverlayState extends State<InitOverlay>
     return Column(
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(2),
+          borderRadius: BorderRadius.circular(3),
           child: SizedBox(
-            height: 3,
+            height: 6,
             child: LinearProgressIndicator(
               value: progress > 0.01 ? progress : null,
               backgroundColor: Colors.white.withValues(alpha: 0.06),
@@ -271,8 +271,9 @@ class _InitOverlayState extends State<InitOverlay>
 
     switch (widget.status.state) {
       case InitState.idle:
-      case InitState.loading:
         return 'Preparing the AI engine…';
+      case InitState.loading:
+        return msg.isNotEmpty ? msg : 'Preparing the AI engine…';
       case InitState.downloading:
         return msg.isNotEmpty ? msg : 'Downloading…';
       case InitState.ready:

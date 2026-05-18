@@ -1,4 +1,4 @@
-﻿"""
+"""
 Runtime abstraction for model loading, generation, embeddings and health.
 """
 from __future__ import annotations
@@ -63,6 +63,11 @@ class LlamaModelRuntime:
 
     def generate(self, prompt: str, stream_cb: Optional[Callable[[str], None]] = None) -> str:
         return llm.generate(prompt, stream_cb=stream_cb)
+
+    @property
+    def last_thinking(self) -> str:
+        """Return the raw <think> block captured from the last generate() call."""
+        return llm.last_thinking
 
     def embedding(self, text: str) -> list[float] | None:
         return get_embedding(text)

@@ -290,11 +290,20 @@ def list_documents() -> list[dict]:
 
 
 def delete_document_by_id(doc_id: int) -> None:
-    """Delete a document and refresh the in-memory retriever index."""
+    """Delete a document and update the in-memory retriever index.
+
+    BE-4: Uses incremental remove_doc() instead of a full reload()
+    to avoid a DB round-trip and full index rebuild on single-doc deletes.
+    """
     try:
         storage_delete_document(doc_id)
     finally:
-        retriever.reload()
+        # Incremental update: faster than full reload for single deletes
+        try:
+            retriever.remove_doc(doc_id)
+        except Exception:
+            # Fallback to full reload if incremental path fails
+            retriever.reload()
 
 
 def chat_direct(
@@ -303,45 +312,119 @@ def chat_direct(
     summary: str = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str]:
     """
     Chat directly with the LLM (no retrieval).
     history: last 3 verbatim (user, assistant) turns.
     summary: compressed plain-text summary of older turns.
+    Returns (success, answer, thinking_text).
     """
     try:
         if not runtime.is_loaded():
-            result = (False, "No LLM model loaded. Please load a GGUF model first.")
+            result = (False, "No LLM model loaded. Please load a GGUF model first.", "")
         else:
             prompt = build_direct_prompt(question, history, summary)
-
-            answer = runtime.generate(prompt, stream_cb=stream_cb).strip()
-            result = (True, answer)
+            from memory_management import check_memory_pressure
+            pressure = check_memory_pressure()
+            max_tok = _estimate_max_tokens(question, pressure)
+            answer = runtime.generate(prompt, stream_cb=stream_cb, max_tokens=max_tok).strip()
+            thinking = getattr(runtime, 'last_thinking', '')
+            result = (True, answer, thinking)
     except Exception as exc:
-        result = (False, f"Error during inference: {exc}")
+        result = (False, f"Error during inference: {exc}", "")
 
     if on_done:
-        on_done(*result)
+        on_done(result[0], result[1])
     return result
+
+
+def _estimate_top_k(question: str) -> int:
+    """
+    Estimate chunk count needed based on question complexity AND device profile.
+    Broad/analytical questions get more context; simple factual ones stay lean.
+    Profile-aware: MEDIUM/HIGH devices retrieve more chunks for richer answers.
+    Zero latency — pure string heuristics, no model call.
+    """
+    from memory_management import get_profile
+    profile_name = get_profile().get("profile", "LOW")
+
+    # Base chunk count per profile — scales with available context window
+    base_k = {"ULTRA_LOW": 1, "LOW": 2, "MEDIUM": 3, "HIGH": 4}.get(profile_name, 2)
+
+    q_lower = question.lower()
+    broad_signals = [
+        "summarize", "summary", "overview", "all ", "everything",
+        "compare", "list ", "what are", "describe", "explain",
+        "main points", "key findings", "tell me about", "how does",
+    ]
+    if any(sig in q_lower for sig in broad_signals):
+        return min(base_k + 2, 6)   # broad questions get 2 extra chunks
+    if len(question.split()) > 20:
+        return min(base_k + 1, 5)   # long questions likely need more context
+    return base_k
+
+
+def _estimate_max_tokens(question: str, profile: dict) -> int:
+    """
+    Give complex / summary questions more token budget so answers are never
+    truncated mid-sentence.  Cap simple factual questions for lower latency.
+    Zero latency — pure string heuristics, no model call.
+    """
+    base = profile.get("max_tokens", 512)
+    q_lower = question.lower()
+
+    # Long-form questions deserve more room
+    long_signals = [
+        "summarize", "summary", "explain", "compare", "list all",
+        "describe", "what are all", "give me", "tell me about",
+        "elaborate", "overview", "in detail", "walk me through",
+    ]
+    if any(s in q_lower for s in long_signals):
+        return min(base * 2, 1536)   # up to double budget, never exceed 1536
+
+    # Short factual questions can be answered quickly
+    short_signals = ["who ", "when ", "where ", "what is ", "how many", "define "]
+    if any(s in q_lower for s in short_signals) and len(question.split()) < 12:
+        return min(base, 300)        # faster first-token for simple facts
+
+    return base
+
+
+def _build_retrieval_query(question: str, history: list) -> str:
+    """
+    Improvement #2: Augment retrieval query with the last user turn.
+    Fixes follow-up questions like 'Who wrote it?' that lack context alone.
+    Zero latency — simple string concatenation.
+    """
+    if not history:
+        return question
+    last_q = history[-1][0] if history else ""
+    if last_q and last_q.lower().strip() != question.lower().strip():
+        return f"{last_q} {question}"
+    return question
 
 
 def ask(
     question: str,
+    history: list | None = None,
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
-) -> tuple[bool, str, list]:
+) -> tuple[bool, str, list, str, list]:
     """
     Run a RAG query synchronously.
     Retrieves top-4 chunks for better context coverage.
-    Returns (success, answer, sources) where sources is a list of dicts:
-      [{"doc_name": "...", "chunk_text": "...", "score": 0.85}, ...]
+    Returns (success, answer, sources, thinking_text, parent_chunks_info) where:
+      sources          = [{"doc_name": ..., "chunk_text": ..., "score": ...}, ...]
+      thinking_text    = raw <think> block from Qwen3 (empty string if none)
+      parent_chunks_info = [{"doc_name": ..., "text": ..., "score": ...}, ...]
     """
-    sources = []
+    sources: list = []
+    parent_chunks_info: list = []
     try:
         if retriever.is_empty():
-            result = (False, "No documents ingested yet.", [])
+            result = (False, "No documents ingested yet.", [], "", [])
         elif not runtime.is_loaded():
-            result = (False, "No LLM model loaded. Please load a GGUF model first.", [])
+            result = (False, "No LLM model loaded. Please load a GGUF model first.", [], "", [])
         else:
             print(f"[RAG] Query: {question[:100]}")
             # Ensure Nomic is running for dense retrieval (may have been
@@ -354,14 +437,25 @@ def ask(
                         ensure_nomic_server(nomic_path)
             except Exception:
                 pass
+            # Improvement #9: adaptive top_k based on question complexity
+            top_k = _estimate_top_k(question)
+            # Improvement #2: augment retrieval query with conversation context
+            retrieval_query = _build_retrieval_query(question, history or [])
+            print(f"[RAG] top_k={top_k}, retrieval_query={retrieval_query[:80]}")
+
             # Use Small-to-Big expansion: retrieve small chunks, expand to parent context
-            results = retriever.query_with_expansion(question, top_k=2)
+            results = retriever.query_with_expansion(retrieval_query, top_k=top_k)
             if not results:
                 # Fallback to regular query without expansion
-                results = retriever.query(question, top_k=2)
+                results = retriever.query(retrieval_query, top_k=top_k)
             if not results:
                 print("[RAG] No relevant context found")
-                result = (False, "No relevant context found.", [])
+                result = (
+                    False,
+                    "I couldn't find relevant information in your documents for this question. "
+                    "Try rephrasing, or verify the relevant document has been uploaded.",
+                    [], "", []
+                )
             else:
                 # Build source metadata early so we can inject it into the prompt
                 doc_name_cache = {}
@@ -377,10 +471,21 @@ def ask(
                     print(f"[RAG] Chunk {i}: score={score:.3f}, doc_id={doc_id}, text={text[:80]}...")
                     doc_name = doc_name_cache.get(doc_id, f"Document #{doc_id}")
                     context_chunks.append(f"[Source: {doc_name}]\n{text}")
+                    # Build parent_chunks_info for UI display (full text, not truncated)
+                    parent_chunks_info.append({
+                        "doc_name": doc_name,
+                        "text": text,
+                        "score": round(score, 4),
+                    })
 
                 prompt = build_rag_prompt(context_chunks, question)
                 print(f"[RAG] Prompt length: {len(prompt)} chars")
 
+                # Adaptive token budget: summaries get more room, simple facts less
+                from memory_management import check_memory_pressure
+                pressure = check_memory_pressure()
+                max_tok = _estimate_max_tokens(question, pressure)
+                print(f"[RAG] max_tokens={max_tok} (base={pressure.get('max_tokens', 512)})")
 
                 seen_doc_names = set()
                 for text, score, doc_id in results:
@@ -395,13 +500,14 @@ def ask(
                     })
 
                 print("[RAG] Generation started...")
-                answer = runtime.generate(prompt, stream_cb=stream_cb).strip()
+                answer = runtime.generate(prompt, stream_cb=stream_cb, max_tokens=max_tok).strip()
+                thinking = getattr(runtime, 'last_thinking', '')
                 print(f"[RAG] Generation finished. Answer length: {len(answer)}")
-                result = (True, answer, sources)
+                result = (True, answer, sources, thinking, parent_chunks_info)
     except Exception as exc:
         import traceback
         traceback.print_exc()
-        result = (False, f"Error during inference: {exc}", [])
+        result = (False, f"Error during inference: {exc}", [], "", [])
 
     if on_done:
         on_done(result[0], result[1])
