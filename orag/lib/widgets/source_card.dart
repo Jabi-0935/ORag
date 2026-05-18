@@ -17,6 +17,7 @@ class SourceCard extends StatefulWidget {
   State<SourceCard> createState() => _SourceCardState();
 }
 
+class _SourceCardState extends State<SourceCard> {
   late bool _expanded = widget.initiallyExpanded;
 
   @override

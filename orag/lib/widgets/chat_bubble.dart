@@ -179,8 +179,9 @@ class _ChatBubbleState extends State<ChatBubble> {
               ],
             ),
           ),
-          if (isUser) const SizedBox(width: 8),
-          if (isUser) _avatar(isUser),
+        ),
+        if (isUser) const SizedBox(width: 8),
+        if (isUser) _avatar(isUser),
         ],
       ),
     );

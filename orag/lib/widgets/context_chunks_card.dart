@@ -19,6 +19,7 @@ class ContextChunksCard extends StatefulWidget {
   State<ContextChunksCard> createState() => _ContextChunksCardState();
 }
 
+class _ContextChunksCardState extends State<ContextChunksCard> {
   late bool _expanded = widget.initiallyExpanded;
 
   @override
