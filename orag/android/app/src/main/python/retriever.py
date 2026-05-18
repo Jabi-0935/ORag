@@ -139,11 +139,19 @@ class HybridRetriever:
         self._embeddings: dict = {}
         self._embed_lock  = threading.Lock()
         self._embed_ready = False
+        # Reuse a single ThreadPoolExecutor for all query() calls
+        # (avoids spawning a new thread pool on every search request)
+        self._query_pool  = ThreadPoolExecutor(max_workers=2)
 
     # --- loading ---
 
     def reload(self) -> None:
-        """Re-read all chunks from the database and trigger embedding computation."""
+        """Re-read all chunks from the database and trigger embedding computation.
+
+        Embedding computation runs in a background thread so this method
+        returns immediately and the UI stays responsive during ingest.
+        Queries fall back to BM25-only (sparse) until embeddings are ready.
+        """
         from storage import load_all_chunks, load_cached_embeddings
         self._chunks = load_all_chunks()
         # Build O(1) indexes for fast lookup
@@ -170,8 +178,14 @@ class HybridRetriever:
                 ensure_nomic_server(nomic_path)
             except Exception as e:
                 print(f"[retriever] Nomic lazy-start skipped: {e}")
-            # Compute dense embeddings synchronously to prevent concurrent execution with Qwen
-            self._compute_embeddings()
+            # Run embedding computation in a background thread so reload()
+            # returns immediately — queries use BM25-only until it finishes
+            t = threading.Thread(
+                target=self._compute_embeddings,
+                daemon=True,
+                name="nomic-embed",
+            )
+            t.start()
         else:
             self._avg_dl = 1.0
 
@@ -388,18 +402,17 @@ class HybridRetriever:
         if self.is_empty():
             return []
 
-        # Step 1: Retrieve from both sources in parallel
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            sparse_fut = pool.submit(self._sparse_search, text, 10)
-            dense_fut = pool.submit(self._dense_search, text, 10)
-            try:
-                sparse = sparse_fut.result(timeout=5)
-            except Exception:
-                sparse = []
-            try:
-                dense = dense_fut.result(timeout=5)
-            except Exception:
-                dense = []
+        # Step 1: Retrieve from both sources in parallel using the shared pool
+        sparse_fut = self._query_pool.submit(self._sparse_search, text, 10)
+        dense_fut  = self._query_pool.submit(self._dense_search, text, 10)
+        try:
+            sparse = sparse_fut.result(timeout=5)
+        except Exception:
+            sparse = []
+        try:
+            dense = dense_fut.result(timeout=5)
+        except Exception:
+            dense = []
 
         if not sparse and not dense:
             return []
@@ -411,8 +424,16 @@ class HybridRetriever:
             # Fallback: only sparse results available (no embeddings yet)
             merged = [(cid, score) for cid, score in sparse]
 
-        # Step 3: Contextual pruning — drop low-relevance, cap at 2
-        pruned = _contextual_prune(merged, max_results=top_k, min_ratio=0.4)
+        # Step 3: Contextual pruning — drop low-relevance, cap at top_k
+        # LOW/ULTRA_LOW devices use a tighter ratio (e.g. 0.5) to keep fewer, 
+        # sharper chunks, saving context window space.
+        try:
+            from memory_management import get_profile
+            prune_ratio = get_profile().get("prune_ratio", 0.4)
+        except Exception:
+            prune_ratio = 0.4
+            
+        pruned = _contextual_prune(merged, max_results=top_k, min_ratio=prune_ratio)
 
         # Step 4: Build result tuples
         seen_texts = set()

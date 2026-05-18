@@ -175,7 +175,7 @@ def ingest_document(
         if os.path.isfile(nomic_path) and isinstance(runtime, LlamaModelRuntime):
             runtime.start_nomic_server_if_needed(nomic_path)
 
-        # Step 1: Extract text
+        # Step 1: Extract text ONCE and reuse for both small and parent chunking
         raw_text = extract_text(resolved)
         if not raw_text or not raw_text.strip():
             result = (False, f"No text could be extracted from '{name}'")
@@ -185,8 +185,10 @@ def ingest_document(
         print(f"[INGEST] Extracted {len(raw_text)} chars")
 
         # Step 2: Chunk with Small-to-Big hierarchy + compute TF-IDF vectors
+        # Pass raw_text directly to avoid re-reading the file a second time.
         try:
-            small_chunks, parent_chunks = process_document_hierarchical(resolved)
+            from chunker import process_document_hierarchical_from_text
+            small_chunks, parent_chunks = process_document_hierarchical_from_text(raw_text)
         except Exception:
             # Fallback to flat chunking if hierarchical fails
             from chunker import chunk_text, tokenise, compute_tfidf_vecs
@@ -204,6 +206,10 @@ def ingest_document(
                     })
             parent_chunks = []
 
+        # Release raw_text and working lists immediately to free RAM
+        del raw_text
+        import gc; gc.collect()
+
         chunks = small_chunks
         if not chunks:
             result = (False, f"Document '{name}' produced 0 chunks")
@@ -218,13 +224,17 @@ def ingest_document(
         if parent_chunks:
             insert_parent_chunks(doc_id, parent_chunks)
         update_doc_chunk_count(doc_id, len(chunks))
-        print(f"[INGEST] Saved {len(chunks)} chunks for doc_id={doc_id}")
+
+        # Free chunk working memory before reloading retriever
+        del small_chunks, parent_chunks, chunks
+        gc.collect()
+        print(f"[INGEST] Saved {len(chunk_ids)} chunks for doc_id={doc_id}")
 
         # Step 5: Reload retriever so new chunks are queryable
         retriever.reload()
         print(f"[INGEST] Retriever reloaded")
 
-        result = (True, f"Ingested '{name}' — {len(chunks)} chunks")
+        result = (True, f"Ingested '{name}' — {len(chunk_ids)} chunks")
     except Exception as exc:
         import traceback
         traceback.print_exc()
@@ -369,7 +379,15 @@ def _estimate_max_tokens(question: str, profile: dict) -> int:
     Give complex / summary questions more token budget so answers are never
     truncated mid-sentence.  Cap simple factual questions for lower latency.
     Zero latency — pure string heuristics, no model call.
+
+    Hard upper bound: never more than 40% of n_ctx so that RAG context
+    chunks always have at least 60% of the window — prevents the
+    llama-server 'reduce the prompts' error on long summary questions.
     """
+    from memory_management import get_profile as _get_profile
+    n_ctx     = _get_profile().get("n_ctx", 2048)
+    abs_max   = max(64, int(n_ctx * 0.40))   # 40% of n_ctx hard ceiling
+
     base = profile.get("max_tokens", 512)
     q_lower = question.lower()
 
@@ -380,14 +398,14 @@ def _estimate_max_tokens(question: str, profile: dict) -> int:
         "elaborate", "overview", "in detail", "walk me through",
     ]
     if any(s in q_lower for s in long_signals):
-        return min(base * 2, 1536)   # up to double budget, never exceed 1536
+        return min(base * 2, 1536, abs_max)   # up to double, never exceed 40% n_ctx
 
     # Short factual questions can be answered quickly
     short_signals = ["who ", "when ", "where ", "what is ", "how many", "define "]
     if any(s in q_lower for s in short_signals) and len(question.split()) < 12:
-        return min(base, 300)        # faster first-token for simple facts
+        return min(base, 300, abs_max)        # faster first-token for simple facts
 
-    return base
+    return min(base, abs_max)
 
 
 def _build_retrieval_query(question: str, history: list) -> str:

@@ -457,14 +457,25 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
 
 def start_nomic_server(model_path: str,
                        n_ctx: int = 512,
-                       n_threads: int = 0) -> bool:
+                       n_threads: int = 0,
+                       kv_cache_type: str = "") -> bool:
     """
     Start a *second* llama-server process on _NOMIC_PORT (8083) loaded
     with the Nomic embedding model.  No-op if already running.
     Returns True when the server is ready.
+
+    kv_cache_type: override KV-cache quantisation (default: read from
+    memory profile; falls back to q4_0 to keep Nomic's footprint minimal).
     """
     if n_threads == 0:
         n_threads = _optimal_threads()
+    # Use profile kv_cache_type if not explicitly provided
+    if not kv_cache_type:
+        try:
+            from memory_management import get_profile
+            kv_cache_type = get_profile().get("kv_cache_type", "q4_0")
+        except Exception:
+            kv_cache_type = "q4_0"
     global _NOMIC_PROC
     exe = _server_exe()
     if exe is None:
@@ -483,10 +494,11 @@ def start_nomic_server(model_path: str,
             "--host",          "127.0.0.1",
             "--embedding",
             "--flash-attn",    "on",
-            "--cache-type-k",  "q8_0",
-            "--cache-type-v",  "q8_0",
+            "--cache-type-k",  kv_cache_type,
+            "--cache-type-v",  kv_cache_type,
         ]
-        print(f"[nomic-server] Starting on port {_NOMIC_PORT}")
+        print(f"[nomic-server] Starting on port {_NOMIC_PORT} "
+              f"(kv_cache={kv_cache_type})")
         print(f"  Model: {Path(model_path).name}")
 
         try:
@@ -648,18 +660,39 @@ def _gen_via_server(
 ) -> str:
     import urllib.request
     import urllib.error
+
+    # ------------------------------------------------------------------ #
+    #  Hard guard: ensure prompt_tokens + max_tokens never exceeds n_ctx.  #
+    #  llama-server returns an error ("reduce the prompts") when they do.  #
+    # ------------------------------------------------------------------ #
+    try:
+        from memory_management import get_profile
+        _n_ctx = get_profile().get("n_ctx", 2048)
+    except Exception:
+        _n_ctx = 2048
+    # Estimate prompt token count — 3.5 chars/token is accurate for English
+    _prompt_tok_est = max(1, len(prompt) // 4)  # slightly conservative
+    _safe_max = max(64, _n_ctx - _prompt_tok_est - 64)  # 64-token safety buffer
+    if max_tokens > _safe_max:
+        print(f"[llm] n_predict clamped {max_tokens} → {_safe_max} "
+              f"(prompt≈{_prompt_tok_est} tok, n_ctx={_n_ctx})")
+        max_tokens = _safe_max
+
     # llama-server native endpoint: /completion  (NOT /v1/completions)
-    # Note: do NOT include "cache_prompt" â€” it is rejected (HTTP 400) by
-    # many llama-server builds.
+    # cache_prompt:true instructs llama-server to cache the KV state for
+    # the prompt prefix.  On follow-up queries that share the same system
+    # prompt, the server skips re-computing the system prompt tokens —
+    # typically saving 200-600 ms on the first token latency.
     payload = json.dumps({
-        "prompt":      prompt,
-        "n_predict":   max_tokens,
-        "temperature": temperature,
-        "top_p":       top_p,
-        "top_k":       20,
+        "prompt":        prompt,
+        "n_predict":     max_tokens,
+        "temperature":   temperature,
+        "top_p":         top_p,
+        "top_k":         20,
         "presence_penalty": 1.5,
-        "stream":      stream_cb is not None,
-        "stop":        ["<|im_end|>", "<|im_start|>", "</s>"],
+        "cache_prompt":  True,         # KV-prefix caching for system prompt reuse
+        "stream":        stream_cb is not None,
+        "stop":          ["<|im_end|>", "<|im_start|>", "</s>"],
     }).encode()
     url = f"http://127.0.0.1:{_LLAMASERVER_PORT}/completion"
     print(f"[DEBUG] Sending request to: {url}")
@@ -668,11 +701,14 @@ def _gen_via_server(
         url, data=payload,
         headers={"Content-Type": "application/json"}, method="POST",
     )
+    # Dynamic timeout: 10s base + 3ms per output token
+    # Streaming gets more headroom since tokens arrive incrementally.
+    _req_timeout = 10 + max_tokens * 3
     for attempt in range(2):
         try:
             if stream_cb is not None:
                 full = ""
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=_req_timeout) as resp:
                     import api
                     for raw in resp:
                         if getattr(api, "_stop_flag", False):
@@ -692,7 +728,7 @@ def _gen_via_server(
                             pass
                 return full
             else:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=_req_timeout) as resp:
                     body = json.loads(resp.read())
                 return body.get("content", "")
         except urllib.error.HTTPError as e:
@@ -706,7 +742,7 @@ def _gen_via_server(
             if attempt == 1:
                 raise RuntimeError(f"llama-server unreachable: {e}") from e
         
-        # Brief pause before retry (reduced from 1s for latency)
+        # Brief pause before retry
         import time
         time.sleep(0.3)
         
@@ -715,7 +751,6 @@ def _gen_via_server(
 
 # ------------------------------------------------------------------ #
 #  Model directory                                                     #
-# ------------------------------------------------------------------ #
 
 def _ensure_writable_dir(path: Optional[str]) -> Optional[str]:
     if not path:
@@ -1130,15 +1165,22 @@ def build_rag_prompt(context_chunks: list[str], question: str) -> str:
 
     Adaptive: caps total context size based on the active memory profile's
     n_ctx so the prompt never overflows the KV cache.
+
+    Token budget math (conservative):
+      - 3.5 chars ≈ 1 token for English text
+      - 512 tokens reserved for the system message + ChatML overhead
+      - max_tokens reserved for the answer
+      - The rest is available for RAG context chunks
     """
-    from memory_management import check_memory_pressure
-    profile = check_memory_pressure()
-    n_ctx = profile.get("n_ctx", 2048)
+    from memory_management import get_profile
+    profile = get_profile()          # use base profile, not pressure-adjusted
+    n_ctx      = profile.get("n_ctx", 2048)
     max_tokens = profile.get("max_tokens", 512)
 
-    # Budget: n_ctx - max_tokens - system/question overhead (~200 tokens)
-    # ~3 chars per token is a safe estimate for English text
-    budget_chars = max(300, (n_ctx - max_tokens - 200) * 3)
+    # Conservative token estimate: 3.5 chars/token, 512-token system overhead
+    # Leave a 64-token safety buffer so we never hit the exact boundary.
+    context_token_budget = max(64, n_ctx - max_tokens - 512 - 64)
+    budget_chars = context_token_budget * 3  # 3 chars/token for chunk text
 
     # Fit as many chunks as the budget allows
     capped = []

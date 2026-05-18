@@ -6,13 +6,16 @@ Central module that:
   2. Provides adaptive parameters for LLM context, threads, batch size
   3. Manages lazy Nomic server loading (deferred until first RAG query)
   4. Reports live memory/battery stats for the Settings UI
-  5. Dynamically downgrades profile under memory pressure
+  5. Dynamically downgrades profile under memory pressure (ratio-scaled)
 
 Profiles:
-  ULTRA_LOW (<=3GB):  ctx=256,  max_tok=128, 1-2 threads, Nomic ctx=64
-  LOW       (<=4GB):  ctx=384,  max_tok=256, 2 threads, Nomic ctx=128
-  MEDIUM    (<=6GB):  ctx=1024, max_tok=512, auto threads, Nomic ctx=384
-  HIGH      (>6GB):   ctx=2048, max_tok=512, auto threads, Nomic ctx=512
+  ULTRA_LOW (<=3GB):  ctx=512,  max_tok=256, 2 threads,    Nomic ctx=64
+  LOW       (<=4.5GB):ctx=768,  max_tok=512, 2 threads,    Nomic ctx=64
+  MEDIUM    (<=6.5GB):ctx=2048, max_tok=768, auto threads, Nomic ctx=384
+  HIGH      (>6.5GB): ctx=4096, max_tok=1024,auto threads, Nomic ctx=512
+
+Pressure thresholds scale with total RAM so large-RAM devices
+(8 GB, 12 GB) are never false-alarmed by Qwen+Nomic memory usage.
 """
 from __future__ import annotations
 
@@ -198,8 +201,10 @@ def _compute_profile() -> dict:
         return {
             "profile": "ULTRA_LOW",
             "total_ram_gb": total,
-            "n_ctx": 256,
-            "max_tokens": 128,
+            # n_ctx=1024: KV cache with q4_0 is only ~10 MB (Qwen 1.5B)
+            # or ~21 MB (Qwen 7B) — negligible. Gives 192-token context budget.
+            "n_ctx": 1024,
+            "max_tokens": 256,
             "n_threads": 2,
             "nomic_ctx": 64,
             "nomic_lazy": True,        # Lazy: start Nomic only on first RAG query
@@ -207,21 +212,30 @@ def _compute_profile() -> dict:
             "kv_cache_type": "q4_0",
             "batch_size": 64,
             "use_mmap": True,          # Let OS page-in model on demand
+            # Only ULTRA_LOW stops Nomic after embedding to reclaim RAM
+            "stop_nomic_after_embed": True,
+            "prune_ratio": 0.5,        # Tighter pruning — fewer but sharper chunks
         }
 
     if total <= 4.5:
         return {
             "profile": "LOW",
             "total_ram_gb": total,
-            "n_ctx": 384,
-            "max_tokens": 256,
+            # n_ctx=1536: KV cache with q4_0 is only ~21 MB (Qwen 1.5B)
+            # or ~42 MB (Qwen 7B) — negligible. Gives 448-token context budget.
+            "n_ctx": 1536,
+            "max_tokens": 512,
             "n_threads": 2,
-            "nomic_ctx": 128,
+            "nomic_ctx": 64,
             "nomic_lazy": True,
             "embed_chunk_limit": 25,
             "kv_cache_type": "q4_0",
             "batch_size": 64,
             "use_mmap": True,
+            # LOW keeps Nomic alive — 4 GB devices have enough headroom
+            # with q4_0 KV cache on both servers (~100 MB Nomic footprint)
+            "stop_nomic_after_embed": False,
+            "prune_ratio": 0.5,        # Tighter pruning — fewer but sharper chunks
         }
 
     if total <= 6.5:
@@ -237,6 +251,8 @@ def _compute_profile() -> dict:
             "kv_cache_type": "q8_0",
             "batch_size": 512,
             "use_mmap": False,         # Full load for consistent latency
+            "stop_nomic_after_embed": False,
+            "prune_ratio": 0.4,
         }
 
     return {
@@ -251,6 +267,8 @@ def _compute_profile() -> dict:
         "kv_cache_type": "q8_0",
         "batch_size": 512,
         "use_mmap": False,
+        "stop_nomic_after_embed": False,
+        "prune_ratio": 0.4,
     }
 
 
@@ -288,10 +306,16 @@ def check_memory_pressure() -> dict:
     device is running low on available RAM.  The base profile is never
     mutated — this returns a copy with overrides.
 
-    Thresholds:
-      < 200 MB free → EMERGENCY: ctx=128, max_tok=64
-      < 400 MB free → WARNING:   cap ctx=256, max_tok=128
-      >= 400 MB     → use base profile unchanged
+    Thresholds are RATIO-BASED (scaled by total RAM) so that large-RAM
+    devices (8 GB, 12 GB) are not false-alarmed when Qwen + Nomic
+    together consume several gigabytes of RAM:
+
+      available < 4% of total RAM  → EMERGENCY: ctx/2, max_tok capped at 128
+      available < 8% of total RAM  → WARNING:   ctx capped at 512, max_tok at 256
+      >= 8% of total RAM           → use base profile unchanged
+
+    Absolute floor: emergency threshold is never lower than 150 MB,
+    warning threshold is never lower than 300 MB (safety net for any device).
     """
     global _LAST_PRESSURE_CHECK
 
@@ -308,30 +332,42 @@ def check_memory_pressure() -> dict:
     if available <= 0:
         return profile  # Can't read — assume OK
 
-    if available < 200:
+    # Compute ratio-scaled thresholds
+    total_mb = profile.get("total_ram_gb", 0.0) * 1024
+    if total_mb > 0:
+        emergency_threshold = max(150.0, total_mb * 0.04)   # 4% of total
+        warning_threshold   = max(300.0, total_mb * 0.08)   # 8% of total
+    else:
+        # Fallback to fixed thresholds if total RAM unknown
+        emergency_threshold = 200.0
+        warning_threshold   = 400.0
+
+    if available < emergency_threshold:
         # EMERGENCY: device is about to OOM — force GC
         import gc
         gc.collect()
         adjusted = dict(profile)
-        adjusted["n_ctx"] = 128
-        adjusted["max_tokens"] = 64
+        adjusted["n_ctx"]            = max(128, profile["n_ctx"] // 2)
+        adjusted["max_tokens"]       = min(profile["max_tokens"], 128)
         adjusted["embed_chunk_limit"] = 5
-        adjusted["batch_size"] = 32
-        adjusted["_pressure"] = "EMERGENCY"
-        print(f"[memory] EMERGENCY pressure: {available:.0f} MB free — "
-              f"downgraded to ctx=128, max_tok=64")
+        adjusted["batch_size"]       = 32
+        adjusted["_pressure"]        = "EMERGENCY"
+        print(f"[memory] EMERGENCY pressure: {available:.0f} MB free "
+              f"(threshold={emergency_threshold:.0f} MB) — "
+              f"downgraded to ctx={adjusted['n_ctx']}, max_tok={adjusted['max_tokens']}")
         return adjusted
 
-    if available < 400:
+    if available < warning_threshold:
         # WARNING: reduce parameters + opportunistic GC
         import gc
         gc.collect()
         adjusted = dict(profile)
-        adjusted["n_ctx"] = min(profile["n_ctx"], 256)
-        adjusted["max_tokens"] = min(profile["max_tokens"], 128)
-        adjusted["embed_chunk_limit"] = min(profile["embed_chunk_limit"], 15)
-        adjusted["_pressure"] = "WARNING"
-        print(f"[memory] WARNING pressure: {available:.0f} MB free — "
+        adjusted["n_ctx"]            = min(profile["n_ctx"], 512)
+        adjusted["max_tokens"]       = min(profile["max_tokens"], 256)
+        adjusted["embed_chunk_limit"] = min(profile["embed_chunk_limit"], 20)
+        adjusted["_pressure"]        = "WARNING"
+        print(f"[memory] WARNING pressure: {available:.0f} MB free "
+              f"(threshold={warning_threshold:.0f} MB) — "
               f"capped ctx={adjusted['n_ctx']}, max_tok={adjusted['max_tokens']}")
         return adjusted
 
@@ -402,10 +438,14 @@ def is_nomic_running() -> bool:
 
 
 def should_stop_nomic_after_embedding() -> bool:
-    """On low-RAM profiles, recommend stopping Nomic after batch embedding
-    to reclaim ~140 MB of RAM for the LLM generation phase."""
+    """Stop Nomic server after batch embedding to reclaim RAM.
+
+    Only ULTRA_LOW (<=3 GB) devices stop Nomic after embedding.
+    LOW (4 GB) and above keep Nomic alive to preserve dense retrieval
+    on every subsequent query without a re-start penalty.
+    """
     profile = get_profile()
-    return profile["profile"] in ("ULTRA_LOW", "LOW")
+    return profile.get("stop_nomic_after_embed", False)
 
 
 # ------------------------------------------------------------------ #

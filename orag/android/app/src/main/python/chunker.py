@@ -345,6 +345,75 @@ def _chunk_text_sized(text: str, size: int, overlap: int,
     return chunks
 
 
+def process_document_hierarchical_from_text(
+    raw_text: str,
+) -> Tuple[List[dict], List[dict]]:
+    """
+    Small-to-Big pipeline operating on already-extracted text.
+
+    Identical to process_document_hierarchical() but accepts the raw text
+    string directly instead of a file path — avoids reading the file a
+    second time when the caller (pipeline.ingest_document) has already
+    extracted the text once.
+
+    Returns (small_chunks, parent_chunks) — same contract as the path-based
+    variant.
+    """
+    # Generate parent (big) chunks
+    raw_parents = _chunk_text_sized(
+        raw_text, PARENT_CHUNK_SIZE, PARENT_CHUNK_OVERLAP, preamble_chars=200
+    )
+    parent_chunks = [
+        {"parent_chunk_idx": idx, "text": text}
+        for idx, text in enumerate(raw_parents)
+    ]
+
+    # Generate small chunks
+    raw_smalls = chunk_text_semantic(raw_text)
+    token_lists = [tokenise(c) for c in raw_smalls]
+    tfidf_vecs, _ = compute_tfidf_vecs(token_lists)
+
+    # Map each small chunk to its parent by word position overlap
+    parent_word_ranges = []
+    words_all = raw_text.split()
+    pos = 0
+    for pidx in range(len(raw_parents)):
+        end_pos = min(pos + PARENT_CHUNK_SIZE, len(words_all))
+        parent_word_ranges.append((pos, end_pos))
+        if end_pos >= len(words_all):
+            break
+        pos += PARENT_CHUNK_SIZE - PARENT_CHUNK_OVERLAP
+
+    small_chunks = []
+    small_pos = 0
+    for idx, (text, tokens, vec) in enumerate(
+        zip(raw_smalls, token_lists, tfidf_vecs)
+    ):
+        small_end = min(small_pos + CHUNK_SIZE, len(words_all))
+        small_mid = (small_pos + small_end) // 2
+
+        parent_idx = 0
+        for pidx, (pstart, pend) in enumerate(parent_word_ranges):
+            if pstart <= small_mid < pend:
+                parent_idx = pidx
+                break
+
+        small_chunks.append({
+            "chunk_idx": idx,
+            "text": text,
+            "tokens": tokens,
+            "tfidf_vec": vec,
+            "parent_chunk_idx": parent_idx,
+        })
+
+        if small_end >= len(words_all):
+            small_pos = small_end
+        else:
+            small_pos += CHUNK_SIZE - CHUNK_OVERLAP
+
+    return small_chunks, parent_chunks
+
+
 def process_document_hierarchical(path: str) -> Tuple[List[dict], List[dict]]:
     """
     Small-to-Big pipeline: extract → small chunks + parent chunks → TF-IDF.

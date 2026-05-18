@@ -99,12 +99,13 @@ def trim_history():
         _conversation_summary = _conversation_summary[-400:]
         _conversation_history = _conversation_history[-MAX_TURNS:]
     # Enforce character budget to prevent context window overflow
+    # Uses 512-token system overhead estimate to match build_rag_prompt.
     try:
         from memory_management import get_profile
         profile = get_profile()
         n_ctx = profile.get("n_ctx", 2048)
         max_tokens = profile.get("max_tokens", 512)
-        budget_chars = max(300, (n_ctx - max_tokens - 200) * 3)
+        budget_chars = max(300, (n_ctx - max_tokens - 512) * 3)
         total = sum(len(q) + len(a) for q, a in _conversation_history)
         while total > budget_chars and _conversation_history:
             removed = _conversation_history.pop(0)
@@ -262,8 +263,9 @@ def init_with_progress(model_path, progress_callback):
                 on_done=on_download_done,
             )
 
-            # Wait for download to complete (sequential)
-            gc.collect() 
+            # Wait for download to complete (up to 10 minutes)
+            gc.collect()
+            download_done.wait(timeout=600)
 
             if download_error[0]:
                 _emit_progress("error", 1.0, f"[ERR-DL] {download_error[0]}")
@@ -468,7 +470,8 @@ def clear_docs():
 # ------------------------------------------------------------------ #
 
 def ask_rag(query, token_callback):
-    """RAG streaming query with source attribution and response caching."""
+    """RAG streaming query with source attribution, response caching,
+    and conversation history so follow-up questions carry prior context."""
     global _is_generating, _stop_flag
 
     if _is_generating:
@@ -497,6 +500,9 @@ def ask_rag(query, token_callback):
     try:
         ensure_ready()
         wait_for_server()
+        # Trim history BEFORE query so retrieval_query augmentation uses
+        # the most recent clean turns (same as chat_stream does)
+        trim_history()
 
         def _on_token(token):
             try:
@@ -512,6 +518,13 @@ def ask_rag(query, token_callback):
         )
 
         print("[RAG-STREAM] Response received")
+
+        # Append this turn to conversation history so follow-up questions
+        # can reference what was just said (mirrors chat_stream behaviour).
+        if ok:
+            if not _conversation_history or _conversation_history[-1] != (query, response):
+                _conversation_history.append((query, response))
+
         result_json = json.dumps({
             "answer": response if ok else f"ERROR: {response}",
             "sources": sources,
