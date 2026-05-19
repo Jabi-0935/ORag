@@ -17,7 +17,6 @@ class ChatInputBar extends StatefulWidget {
   final VoidCallback onStop;
   final VoidCallback onAddFile;
   final bool isUploading;
-  final String uploadStatus;
 
   const ChatInputBar({
     super.key,
@@ -30,7 +29,6 @@ class ChatInputBar extends StatefulWidget {
     required this.onStop,
     required this.onAddFile,
     required this.isUploading,
-    required this.uploadStatus,
   });
 
   @override
@@ -142,38 +140,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
                     ),
                   ],
                 ),
-                child: widget.isUploading
-                    ? Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 18, vertical: 12),
-                        child: Row(
-                          children: [
-                            const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: AppColors.primary,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                widget.uploadStatus.isNotEmpty
-                                    ? widget.uploadStatus
-                                    : 'Uploading...',
-                                style: const TextStyle(
-                                  color: AppColors.textDim,
-                                  fontSize: 15,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                    : KeyboardListener(
+                child: KeyboardListener(
                         focusNode: FocusNode(),
                         onKeyEvent: (event) {
                           if (event is KeyDownEvent &&

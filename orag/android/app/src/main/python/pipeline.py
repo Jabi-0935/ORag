@@ -322,7 +322,6 @@ def chat_direct(
     summary: str = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
-    longer_answers: bool = False,
 ) -> tuple[bool, str, str]:
     """
     Chat directly with the LLM (no retrieval).
@@ -334,10 +333,10 @@ def chat_direct(
         if not runtime.is_loaded():
             result = (False, "No LLM model loaded. Please load a GGUF model first.", "")
         else:
-            prompt = build_direct_prompt(question, history, summary, longer_answers=longer_answers)
+            prompt = build_direct_prompt(question, history, summary)
             from memory_management import check_memory_pressure
             pressure = check_memory_pressure()
-            max_tok = _estimate_max_tokens(question, pressure, longer_answers=longer_answers)
+            max_tok = _estimate_max_tokens(question, pressure)
             answer = runtime.generate(prompt, stream_cb=stream_cb, max_tokens=max_tok).strip()
             thinking = getattr(runtime, 'last_thinking', '')
             result = (True, answer, thinking)
@@ -374,7 +373,7 @@ def _estimate_top_k(question: str) -> int:
     return base_k
 
 
-def _estimate_max_tokens(question: str, profile: dict, longer_answers: bool = False) -> int:
+def _estimate_max_tokens(question: str, profile: dict) -> int:
     """
     Give complex / summary questions more token budget so answers are never
     truncated mid-sentence.  Cap simple factual questions for lower latency.
@@ -387,9 +386,6 @@ def _estimate_max_tokens(question: str, profile: dict, longer_answers: bool = Fa
     from memory_management import get_profile as _get_profile
     n_ctx     = _get_profile().get("n_ctx", 2048)
     abs_max   = max(64, int(n_ctx * 0.40))   # 40% of n_ctx hard ceiling
-
-    if longer_answers:
-        return abs_max
 
     base = profile.get("max_tokens", 512)
     q_lower = question.lower()
@@ -431,7 +427,6 @@ def ask(
     summary: str = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
-    longer_answers: bool = False,
 ) -> tuple[bool, str, list, str, list]:
     """
     Run a RAG query synchronously.
@@ -501,13 +496,13 @@ def ask(
                         "score": round(score, 4),
                     })
 
-                prompt = build_rag_prompt(context_chunks, question, history, summary, longer_answers=longer_answers)
+                prompt = build_rag_prompt(context_chunks, question, history, summary)
                 print(f"[RAG] Prompt length: {len(prompt)} chars")
 
                 # Adaptive token budget: summaries get more room, simple facts less
                 from memory_management import check_memory_pressure
                 pressure = check_memory_pressure()
-                max_tok = _estimate_max_tokens(question, pressure, longer_answers=longer_answers)
+                max_tok = _estimate_max_tokens(question, pressure)
                 print(f"[RAG] max_tokens={max_tok} (base={pressure.get('max_tokens', 512)})")
 
                 seen_doc_names = set()

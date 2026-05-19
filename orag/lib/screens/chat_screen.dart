@@ -4,13 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../controllers/chat_controller.dart';
 import '../models/chat_message.dart';
-import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/chat_input_bar.dart';
 import '../widgets/document_drawer.dart';
 import '../widgets/init_overlay.dart';
 import 'settings_screen.dart';
+import '../utils/top_snackbar.dart';
 import '../widgets/typing_indicator.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -25,10 +25,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  
+  // Mode badge pulse animation
+  late final AnimationController _modePulseController;
+  late final Animation<double> _modePulseAnimation;
+  bool? _prevRagMode; // track previous mode to trigger pulse
 
   @override
   void initState() {
     super.initState();
+    _modePulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+    _modePulseAnimation = TweenSequence<double>([
+      TweenSequenceItem(tween: Tween(begin: 1.0, end: 1.15), weight: 40),
+      TweenSequenceItem(tween: Tween(begin: 1.15, end: 1.0), weight: 60),
+    ]).animate(CurvedAnimation(
+      parent: _modePulseController,
+      curve: Curves.easeOut,
+    ));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(chatControllerProvider.notifier).startInit();
     });
@@ -38,6 +54,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void dispose() {
     _scrollController.dispose();
     _controller.dispose();
+    _modePulseController.dispose();
     super.dispose();
   }
 
@@ -110,22 +127,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       }
     });
 
-    // Show error banner via SnackBar (non-destructive)
+    // Show error banner via top notification (non-destructive)
     ref.listen<ChatState>(chatControllerProvider, (prev, next) {
       if (next.errorBanner != null && next.errorBanner != prev?.errorBanner) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(next.errorBanner!),
-            backgroundColor: AppColors.error,
-            action: SnackBarAction(
-              label: 'Dismiss',
-              textColor: Colors.white,
-              onPressed: () {
-                ref.read(chatControllerProvider.notifier).dismissError();
-              },
-            ),
-            duration: const Duration(seconds: 6),
-          ),
+        showTopSnackBar(
+          context,
+          message: next.errorBanner!,
+          backgroundColor: AppColors.error,
+          duration: const Duration(seconds: 6),
         );
       }
     });
@@ -145,6 +154,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             Column(
               children: [
                 _buildAppBar(chatState),
+                // Upload status banner (above message list, not blocking input)
+                if (chatState.isUploading)
+                  _buildUploadBanner(chatState),
                 Expanded(child: _buildMessageList(chatState)),
                 ChatInputBar(
                   controller: _controller,
@@ -156,7 +168,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   onStop: _stopGeneration,
                   onAddFile: () => ref.read(chatControllerProvider.notifier).pickAndUploadFile(),
                   isUploading: chatState.isUploading,
-                  uploadStatus: chatState.uploadStatus,
                 ),
               ],
             ),
@@ -232,28 +243,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             ),
           ),
 
-          // Longer Answers Toggle
-          Tooltip(
-            message: 'Longer Answers',
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.notes_rounded, size: 18, color: AppColors.textSecondary),
-                Transform.scale(
-                  scale: 0.7,
-                  child: Switch(
-                    value: chatState.longerAnswers,
-                    onChanged: (_) {
-                      HapticFeedback.selectionClick();
-                      ref.read(chatControllerProvider.notifier).toggleLongerAnswers();
-                    },
-                    activeColor: AppColors.primary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
           // Documents button
           IconButton(
             icon: const Icon(Icons.folder_open_rounded, size: 21),
@@ -276,59 +265,116 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Widget _buildModeBadge(ChatState chatState) {
     final isRag = chatState.ragMode;
+    
+    // Trigger pulse when mode changes
+    if (_prevRagMode != null && _prevRagMode != isRag) {
+      _modePulseController.forward(from: 0.0);
+    }
+    _prevRagMode = isRag;
+
     return GestureDetector(
       onTap: () {
         HapticFeedback.selectionClick();
         ref.read(chatControllerProvider.notifier).toggleRagMode();
       },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeInOut,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-        decoration: BoxDecoration(
-          color: (isRag ? AppColors.secondary : AppColors.primary)
-              .withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
+      child: ScaleTransition(
+        scale: _modePulseAnimation,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          decoration: BoxDecoration(
             color: (isRag ? AppColors.secondary : AppColors.primary)
-                .withValues(alpha: 0.35),
-            width: 1,
+                .withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: (isRag ? AppColors.secondary : AppColors.primary)
+                  .withValues(alpha: 0.35),
+              width: 1,
+            ),
           ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              isRag ? Icons.description_outlined : Icons.smart_toy_outlined,
-              size: 13,
-              color: isRag ? AppColors.secondary : AppColors.primary,
-            ),
-            const SizedBox(width: 5),
-            Flexible(
-              child: Text(
-                isRag
-                    ? (chatState.activeDocumentName != null
-                        ? chatState.activeDocumentName!.length > 18
-                            ? '📄 ${chatState.activeDocumentName!.substring(0, 16)}…'
-                            : '📄 ${chatState.activeDocumentName}'
-                        : 'Document Mode')
-                    : 'AI Chat',
-                style: TextStyle(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: Icon(
+                  isRag ? Icons.description_outlined : Icons.smart_toy_outlined,
+                  key: ValueKey(isRag),
+                  size: 13,
                   color: isRag ? AppColors.secondary : AppColors.primary,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
-            ),
-          ],
+              const SizedBox(width: 5),
+              Flexible(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Text(
+                    isRag
+                        ? (chatState.activeDocumentName != null
+                            ? chatState.activeDocumentName!.length > 18
+                                ? '📄 ${chatState.activeDocumentName!.substring(0, 16)}…'
+                                : '📄 ${chatState.activeDocumentName}'
+                            : 'Document Mode')
+                        : 'AI Chat',
+                    key: ValueKey('mode_$isRag'),
+                    style: TextStyle(
+                      color: isRag ? AppColors.secondary : AppColors.primary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
 
+  Widget _buildUploadBanner(ChatState chatState) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.primary.withValues(alpha: 0.08),
+        border: const Border(
+          bottom: BorderSide(color: AppColors.divider, width: 1),
+        ),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppColors.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              chatState.uploadStatus.isNotEmpty
+                  ? chatState.uploadStatus
+                  : 'Processing document…',
+              style: const TextStyle(
+                color: AppColors.primary,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildMessageList(ChatState chatState) {
     if (chatState.messages.isEmpty && chatState.initDone) {

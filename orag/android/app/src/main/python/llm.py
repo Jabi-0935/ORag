@@ -89,7 +89,7 @@ def _get_llama():
     global _llama_mod
     if _llama_mod is None:
         try:
-            from llama_cpp import Llama
+            from llama_cpp import Llama  # type: ignore
             _llama_mod = Llama
         except ImportError:
             raise RuntimeError("llama-cpp-python is not installed.")
@@ -99,7 +99,7 @@ def _get_llama():
 def _ollama_reachable() -> bool:
     """Return True if the Ollama server is reachable on localhost:11434."""
     try:
-        import ollama as _ol
+        import ollama as _ol  # type: ignore
         _ol.list()
         return True
     except Exception:
@@ -345,7 +345,7 @@ def _launch_binary(cmd: list, env: dict | None = None) -> subprocess.Popen:
     # creationflags is Windows-only; using it on Android causes issues
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        return subprocess.Popen(cmd, **kwargs)
+        return subprocess.Popen(cmd, **kwargs)  # type: ignore
 
     # On Android, try multiple execution strategies
     strategies = [cmd]  # Strategy 1: direct exec
@@ -361,7 +361,6 @@ def _launch_binary(cmd: list, env: dict | None = None) -> subprocess.Popen:
                 if not os.path.isfile(copied_path) or os.path.getsize(copied_path) != os.path.getsize(exe_path):
                     shutil.copy2(exe_path, copied_path)
                     print(f"[launch] Copied binary to {copied_path}")
-                import stat as stat_mod
                 os.chmod(copied_path, 0o755)
                 copied_cmd = [copied_path] + cmd[1:]
                 strategies.append(copied_cmd)
@@ -378,9 +377,8 @@ def _launch_binary(cmd: list, env: dict | None = None) -> subprocess.Popen:
     for i, try_cmd in enumerate(strategies):
         try:
             print(f"[launch] Strategy {i+1}: {try_cmd[0]}")
-            proc = subprocess.Popen(try_cmd, **kwargs)
+            proc = subprocess.Popen(try_cmd, **kwargs)  # type: ignore
             # Check if process died immediately (within 0.5s)
-            import time
             time.sleep(0.3)
             if proc.poll() is not None:
                 rc = proc.returncode
@@ -448,7 +446,7 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
         print(f"  Model: {Path(model_path).name}")
         print("  Loading model into memory, please wait ...")
         if on_progress:
-            on_progress(0.02, f"Preparing the AI engine\u2026")
+            on_progress(0.02, "Preparing the AI engine\u2026")
 
         try:
             _LLAMASERVER_PROC = _launch_binary(cmd)
@@ -520,7 +518,7 @@ def start_nomic_server(model_path: str,
             return False
     ready = _wait_for_server(_NOMIC_PORT, timeout=120)
     if not ready:
-        _stop_nomic_server()
+        stop_nomic_server()
         print("[nomic-server] Timed out / crashed.")
         return False
 
@@ -755,7 +753,6 @@ def _gen_via_server(
                 raise RuntimeError(f"llama-server unreachable: {e}") from e
         
         # Brief pause before retry
-        import time
         time.sleep(0.3)
         
     return ""
@@ -937,7 +934,7 @@ class LlamaCppModel:
 
     def _load_via_ollama(self, model_path: str) -> None:
         try:
-            import ollama as _ol
+            import ollama as _ol  # type: ignore
         except ImportError:
             raise RuntimeError("ollama package not installed.")
         stem  = Path(model_path).stem.lower()
@@ -1038,6 +1035,8 @@ class LlamaCppModel:
 
     def _gen_llama_cpp(self, prompt, max_tokens, temp, top_p, stream_cb):
         with self._lock:
+            if self._model is None:
+                raise RuntimeError("Model not loaded")
             if stream_cb:
                 full = ""
                 for chunk in self._model(
@@ -1062,7 +1061,7 @@ class LlamaCppModel:
                 return out["choices"][0]["text"]
 
     def _gen_ollama(self, prompt, max_tokens, temp, top_p, stream_cb):
-        import ollama as _ol
+        import ollama as _ol  # type: ignore
         options = {
             "temperature": temp,
             "top_p":       top_p,
@@ -1175,7 +1174,6 @@ def build_rag_prompt(
     question: str,
     history: list[tuple[str, str]] | None = None,
     summary: str = "",
-    longer_answers: bool = False,
 ) -> str:
     """
     Build a RAG prompt using Qwen3.5 ChatML instruction format.
@@ -1212,22 +1210,16 @@ def build_rag_prompt(
         used += len(piece)
 
     ctx_text = "\n\n---\n\n".join(capped)
-    
-    if longer_answers:
-        system_msg = (
-            "You are an expert analyst. Provide a highly detailed, comprehensive, and exhaustive answer using only the provided context.\n"
-            "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
-            "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
-            "Do not repeat the question."
-        )
-    else:
-        system_msg = (
-            "You are an expert analyst. Answer directly and concisely using only the provided context.\n"
-            "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
-            "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
-            "Do not repeat the question."
-        )
-    
+
+    system_msg = (
+        "You are an expert analyst. Answer using only the provided context.\n"
+        "Adapt your response length to the question: give concise, direct answers for simple or factual questions, "
+        "and detailed, comprehensive answers for complex, analytical, or summary questions.\n"
+        "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
+        "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
+        "Do not repeat the question."
+    )
+
     if summary.strip():
         system_msg += "\n\nEarlier in this conversation (summary):\n" + summary.strip()
 
@@ -1238,7 +1230,7 @@ def build_rag_prompt(
             f"<|im_start|>user\n{user_msg}<|im_end|>\n"
             f"<|im_start|>assistant\n{asst_msg}<|im_end|>\n"
         )
-    
+
     parts.append(
         f"<|im_start|>user\n"
         f"Context:\n{ctx_text}\n\nQuestion: {question}<|im_end|>\n"
@@ -1280,25 +1272,19 @@ def build_direct_prompt(
     question: str,
     history: list[tuple[str, str]] | None = None,
     summary: str = "",
-    longer_answers: bool = False,
 ) -> str:
     """
     Build a plain conversational prompt using Qwen 2.5's ChatML format.
     summary : compressed plain-text of older turns (no LLM call, first sentences).
     history : last 3 verbatim (user, assistant) pairs.
     """
-    if longer_answers:
-        system_msg = (
-            "You are a highly capable AI assistant. Provide a highly detailed, comprehensive, and exhaustive answer.\n"
-            "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
-            "Do not repeat the question."
-        )
-    else:
-        system_msg = (
-            "You are a direct AI assistant. Answer clearly and concisely.\n"
-            "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
-            "Do not repeat the question."
-        )
+    system_msg = (
+        "You are a highly capable AI assistant.\n"
+        "Adapt your response length to the question: give concise, direct answers for simple or factual questions, "
+        "and detailed, comprehensive answers for complex, analytical, or exploratory questions.\n"
+        "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
+        "Do not repeat the question."
+    )
     # Append compressed older context to system message so it takes fewer
     # tokens than full ChatML turns but still informs the model.
     if summary.strip():

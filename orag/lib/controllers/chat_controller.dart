@@ -21,7 +21,6 @@ class ChatState {
   final bool isUploading;
   final String uploadStatus;
   final String? activeDocumentName;
-  final bool longerAnswers;
 
   const ChatState({
     this.messages = const [],
@@ -33,7 +32,6 @@ class ChatState {
     this.isUploading = false,
     this.uploadStatus = '',
     this.activeDocumentName,
-    this.longerAnswers = false,
   });
 
   ChatState copyWith({
@@ -48,7 +46,6 @@ class ChatState {
     String? uploadStatus,
     String? activeDocumentName,
     bool clearActiveDocument = false,
-    bool? longerAnswers,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
@@ -60,7 +57,6 @@ class ChatState {
       isUploading: isUploading ?? this.isUploading,
       uploadStatus: uploadStatus ?? this.uploadStatus,
       activeDocumentName: clearActiveDocument ? null : (activeDocumentName ?? this.activeDocumentName),
-      longerAnswers: longerAnswers ?? this.longerAnswers,
     );
   }
 }
@@ -171,32 +167,11 @@ class ChatController extends Notifier<ChatState> {
     if (!state.isGenerating) {
       final newMode = !state.ragMode;
       state = state.copyWith(ragMode: newMode, clearActiveDocument: !newMode);
-      _addSystemMessage(
-        newMode
-            ? '📄 Switched to Document mode — ask questions about your uploaded documents.'
-            : '🤖 Switched to AI Chat mode — general-purpose assistant.',
-      );
-    }
-  }
-
-  void toggleLongerAnswers() {
-    if (!state.isGenerating) {
-      state = state.copyWith(longerAnswers: !state.longerAnswers);
     }
   }
 
   void _exitRagMode() {
     state = state.copyWith(ragMode: false, clearActiveDocument: true);
-    _addSystemMessage(
-      '🤖 Exited Document mode. You\'re now chatting with the AI assistant.\n'
-      'Tap ➕ to add a document and return to Document mode.',
-    );
-  }
-
-  void _enterRagMode({String? docName}) {
-    state = state.copyWith(ragMode: true, activeDocumentName: docName);
-    final label = docName ?? 'Document';
-    _addSystemMessage('📄 $label type quit to go ai chat');
   }
 
   void _addSystemMessage(String text) {
@@ -265,7 +240,7 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
-    final chat = _platform.chatStream(text, longerAnswers: state.longerAnswers);
+    final chat = _platform.chatStream(text);
 
     _chatSub?.cancel();
     _chatSub = chat.tokens.listen(
@@ -328,7 +303,7 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
-    final rag = _platform.ragStream(text, longerAnswers: state.longerAnswers);
+    final rag = _platform.ragStream(text);
 
     _chatSub?.cancel();
     _chatSub = rag.tokens.listen(
@@ -464,10 +439,10 @@ class ChatController extends Notifier<ChatState> {
       messages: finalMessages,
     );
 
-    // Auto-switch to RAG mode with a system message
+    // Show success notification as a system message
     if (allSuccess) {
       final docName = result.files.length == 1 ? result.files.first.name : '${result.files.length} documents';
-      _enterRagMode(docName: docName);
+      _addSystemMessage('$docName uploaded to knowledge base.');
     }
   }
 

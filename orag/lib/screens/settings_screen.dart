@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/top_snackbar.dart';
 
 /// Settings & engine health screen.
 class SettingsScreen extends StatefulWidget {
@@ -52,11 +53,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await widget.platform.clearDocuments();
       _loadHealth();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('All documents cleared'),
-            backgroundColor: AppColors.success,
-          ),
+        showTopSnackBar(
+          context,
+          message: 'All documents cleared',
+          backgroundColor: AppColors.success,
         );
       }
     }
@@ -70,11 +70,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (confirmed) {
       widget.onClearChat();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Conversation cleared'),
-            backgroundColor: AppColors.success,
-          ),
+        showTopSnackBar(
+          context,
+          message: 'Conversation cleared',
+          backgroundColor: AppColors.success,
         );
       }
     }

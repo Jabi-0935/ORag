@@ -6,8 +6,6 @@ import 'package:intl/intl.dart';
 import '../models/chat_message.dart';
 import '../theme/app_theme.dart';
 import 'thinking_dropdown.dart';
-import 'context_chunks_card.dart';
-import 'source_card.dart';
 
 /// A styled chat bubble for user or AI messages.
 /// AI messages render markdown (bold, code, lists, headings).
@@ -86,17 +84,6 @@ class _ChatBubbleState extends State<ChatBubble> {
                     alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
                     child: _bubble(isUser),
                   ),
-                  // Timestamp
-                  Padding(
-                  padding: const EdgeInsets.only(top: 3, left: 4, right: 4),
-                  child: Text(
-                    DateFormat.jm().format(widget.message.timestamp),
-                    style: const TextStyle(
-                      color: AppColors.textDim,
-                      fontSize: 10,
-                    ),
-                  ),
-                ),
                 // Action row: TTS + Copy + Metadata — only on complete assistant messages
                 if (!isUser && widget.message.text.isNotEmpty && !widget.message.isStreaming)
                   Padding(
@@ -169,8 +156,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             if (widget.message.hasThinking) _buildMetadataIcon(Icons.lightbulb_outline, 'Thinking', _showThinkingModal),
-                            if (widget.message.hasParentChunks) _buildMetadataIcon(Icons.description_outlined, 'Context', _showContextModal),
-                            if (widget.message.hasSources) _buildMetadataIcon(Icons.folder_open_outlined, 'Sources', _showSourceModal),
+                            if (widget.message.hasSources || widget.message.hasParentChunks) _buildMetadataIcon(Icons.source_rounded, 'Sources', _showMergedSourcesModal),
                           ],
                         ),
                       ],
@@ -245,7 +231,26 @@ class _ChatBubbleState extends State<ChatBubble> {
           ),
         ],
       ),
-      child: isUser ? _userText() : _aiMarkdown(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          isUser ? _userText() : _aiMarkdown(),
+          const SizedBox(height: 4),
+          // Timestamp inside the bubble
+          Align(
+            alignment: Alignment.bottomRight,
+            child: Text(
+              DateFormat.jm().format(widget.message.timestamp),
+              style: TextStyle(
+                color: isUser
+                    ? AppColors.textDim.withValues(alpha: 0.5)
+                    : AppColors.textDim.withValues(alpha: 0.4),
+                fontSize: 10,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -404,28 +409,19 @@ class _ChatBubbleState extends State<ChatBubble> {
     );
   }
 
-  void _showContextModal() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _buildModalContainer(
-        title: 'Context Used',
-        icon: Icons.description_outlined,
-        child: ContextChunksCard(chunks: widget.message.parentChunks, initiallyExpanded: true),
-      ),
-    );
-  }
-
-  void _showSourceModal() {
+  /// Merged Sources modal: lists documents, each expandable to show context chunks.
+  void _showMergedSourcesModal() {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => _buildModalContainer(
         title: 'Sources',
-        icon: Icons.folder_open_outlined,
-        child: SourceCard(sources: widget.message.sources, initiallyExpanded: true),
+        icon: Icons.source_rounded,
+        child: _MergedSourcesContent(
+          sources: widget.message.sources,
+          parentChunks: widget.message.parentChunks,
+        ),
       ),
     );
   }
@@ -477,5 +473,259 @@ class _ChatBubbleState extends State<ChatBubble> {
         ],
       ),
     );
+  }
+}
+
+/// Merged sources + context chunks display.
+/// Groups parent chunks by document name, with each document expandable to
+/// reveal the context chunks used from it.
+class _MergedSourcesContent extends StatefulWidget {
+  final List<SourceAttribution> sources;
+  final List<ParentChunk> parentChunks;
+
+  const _MergedSourcesContent({
+    required this.sources,
+    required this.parentChunks,
+  });
+
+  @override
+  State<_MergedSourcesContent> createState() => _MergedSourcesContentState();
+}
+
+class _MergedSourcesContentState extends State<_MergedSourcesContent> {
+  final Set<String> _expandedDocs = {};
+
+  @override
+  Widget build(BuildContext context) {
+    // Build a merged list of documents with their context chunks
+    final Map<String, _DocSourceInfo> docMap = {};
+
+    // Add sources
+    for (final src in widget.sources) {
+      final key = src.docName;
+      docMap.putIfAbsent(key, () => _DocSourceInfo(docName: key));
+      docMap[key]!.score = src.score > docMap[key]!.score ? src.score : docMap[key]!.score;
+    }
+
+    // Add parent chunks grouped by doc name
+    for (final chunk in widget.parentChunks) {
+      final key = chunk.docName;
+      docMap.putIfAbsent(key, () => _DocSourceInfo(docName: key));
+      docMap[key]!.chunks.add(chunk);
+      if (chunk.score > docMap[key]!.score) {
+        docMap[key]!.score = chunk.score;
+      }
+    }
+
+    final docList = docMap.values.toList()
+      ..sort((a, b) => b.score.compareTo(a.score));
+
+    if (docList.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text(
+          'No source information available.',
+          style: TextStyle(color: AppColors.textDim, fontSize: 13),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        children: docList.map((doc) => _buildDocItem(doc)).toList(),
+      ),
+    );
+  }
+
+  Widget _buildDocItem(_DocSourceInfo doc) {
+    final isExpanded = _expandedDocs.contains(doc.docName);
+    final isPdf = doc.docName.toLowerCase().endsWith('.pdf');
+    final hasChunks = doc.chunks.isNotEmpty;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: AppColors.secondary.withValues(alpha: 0.2),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Document header (tap to expand)
+          InkWell(
+            onTap: hasChunks
+                ? () => setState(() {
+                      if (isExpanded) {
+                        _expandedDocs.remove(doc.docName);
+                      } else {
+                        _expandedDocs.add(doc.docName);
+                      }
+                    })
+                : null,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(
+                    isPdf ? Icons.picture_as_pdf_rounded : Icons.text_snippet_rounded,
+                    size: 16,
+                    color: isPdf ? AppColors.error : AppColors.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      doc.docName,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _RelevanceBadge(score: doc.score),
+                  if (hasChunks) ...[
+                    const SizedBox(width: 6),
+                    AnimatedRotation(
+                      turns: isExpanded ? 0.5 : 0.0,
+                      duration: const Duration(milliseconds: 200),
+                      child: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 18,
+                        color: AppColors.textDim,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
+          // Expanded context chunks
+          if (isExpanded && hasChunks)
+            AnimatedCrossFade(
+              firstChild: const SizedBox.shrink(),
+              secondChild: _buildChunkList(doc.chunks),
+              crossFadeState: isExpanded
+                  ? CrossFadeState.showSecond
+                  : CrossFadeState.showFirst,
+              duration: const Duration(milliseconds: 200),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChunkList(List<ParentChunk> chunks) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Divider(color: AppColors.divider, height: 1),
+          const SizedBox(height: 6),
+          Text(
+            'Context used · ${chunks.length} chunk${chunks.length > 1 ? 's' : ''}',
+            style: TextStyle(
+              color: AppColors.primary.withValues(alpha: 0.7),
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 6),
+          ...chunks.map((chunk) => _buildChunkItem(chunk)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChunkItem(ParentChunk chunk) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        constraints: const BoxConstraints(maxHeight: 160),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceLight.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: AppColors.divider,
+            width: 1,
+          ),
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(10),
+          child: Text(
+            chunk.text,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 11,
+              height: 1.5,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Internal data class to group source info by document.
+class _DocSourceInfo {
+  final String docName;
+  double score;
+  final List<ParentChunk> chunks;
+
+  _DocSourceInfo({
+    required this.docName,
+    List<ParentChunk>? chunks,
+  }) : score = 0.0, chunks = chunks ?? [];
+}
+
+/// Relevance badge widget used in the merged sources display.
+class _RelevanceBadge extends StatelessWidget {
+  final double score;
+  const _RelevanceBadge({required this.score});
+
+  @override
+  Widget build(BuildContext context) {
+    final label = _label(score);
+    final color = _color(score);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 9.5,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.3,
+        ),
+      ),
+    );
+  }
+
+  String _label(double s) {
+    if (s >= 0.018) return 'HIGH';
+    if (s >= 0.010) return 'MED';
+    if (s >= 0.004) return 'LOW';
+    return 'WEAK';
+  }
+
+  Color _color(double s) {
+    if (s >= 0.018) return AppColors.success;
+    if (s >= 0.010) return AppColors.primary;
+    if (s >= 0.004) return AppColors.warning;
+    return AppColors.textDim;
   }
 }

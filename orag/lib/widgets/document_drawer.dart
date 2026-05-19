@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/top_snackbar.dart';
 
 /// Slide-out panel for managing documents used in RAG.
 class DocumentDrawer extends StatefulWidget {
@@ -79,11 +80,10 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
         _isUploading = false;
         _uploadStatus = '';
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$message (${_uploadStopwatch.elapsed.inSeconds}s)'),
-          backgroundColor: success ? AppColors.success : AppColors.error,
-        ),
+      showTopSnackBar(
+        context,
+        message: '$message (${_uploadStopwatch.elapsed.inSeconds}s)',
+        backgroundColor: success ? AppColors.success : AppColors.error,
       );
       if (success) _loadDocs();
     }
