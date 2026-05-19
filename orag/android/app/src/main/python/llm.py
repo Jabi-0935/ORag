@@ -327,9 +327,18 @@ def _launch_binary(cmd: list, env: dict | None = None) -> subprocess.Popen:
     if env is None:
         env = _prepare_android_env()
 
+    log_file = None
+    if _is_android():
+        priv = _android_private_dir()
+        if priv:
+            log_path = os.path.join(priv, "llama_debug.txt")
+            log_file = open(log_path, "a")
+            log_file.write(f"\\n--- Launching {' '.join(cmd)} ---\\n")
+            log_file.flush()
+
     kwargs = dict(
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_file if log_file else subprocess.DEVNULL,
+        stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
         env=env,
     )
 

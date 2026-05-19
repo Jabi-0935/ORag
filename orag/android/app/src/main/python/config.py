@@ -1,4 +1,4 @@
-﻿"""
+"""
 Shared configuration and constants for the offline RAG app.
 """
 from __future__ import annotations
@@ -10,8 +10,8 @@ APP_NAME = "O-RAG"
 SERVICE_TITLE = "O-RAG AI Engine"
 SERVICE_MESSAGE = "AI engine running in background"
 
-QWEN_SERVER_PORT = 8080
-NOMIC_SERVER_PORT = 8081
+QWEN_SERVER_PORT = 28080
+NOMIC_SERVER_PORT = 28081
 
 ENV_FORCE_BOOTSTRAP_DOWNLOAD = "ORAG_FORCE_BOOTSTRAP_DOWNLOAD"
 ENV_FORCE_NETWORK_MODEL_DOWNLOAD = "ORAG_FORCE_NETWORK_MODEL_DOWNLOAD"
