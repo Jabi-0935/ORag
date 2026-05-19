@@ -75,27 +75,10 @@ class _TypingIndicatorState extends State<TypingIndicator>
               ),
             ),
           ),
-          const SizedBox(width: 8),
-          // Dots bubble
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-            decoration: BoxDecoration(
-              color: AppColors.aiBubble,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(18),
-                topRight: Radius.circular(18),
-                bottomLeft: Radius.circular(4),
-                bottomRight: Radius.circular(18),
-              ),
-              border: Border.all(color: AppColors.divider, width: 1),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.15),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
+          const SizedBox(width: 10),
+          // Dots — no bubble, matches new AI style
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: List.generate(3, (i) {

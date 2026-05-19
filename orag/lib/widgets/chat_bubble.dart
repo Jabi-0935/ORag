@@ -60,115 +60,184 @@ class _ChatBubbleState extends State<ChatBubble> {
   @override
   Widget build(BuildContext context) {
     final isUser = widget.message.isUser;
+    return isUser ? _buildUserMessage() : _buildAiMessage();
+  }
 
+  // ── User message: right-aligned colored bubble with avatar ────────────
+
+  Widget _buildUserMessage() {
     return Padding(
-      padding: EdgeInsets.only(
-        left: isUser ? 48 : 12,
-        right: isUser ? 12 : 48,
-        top: 4,
-        bottom: 4,
-      ),
+      padding: const EdgeInsets.only(left: 48, right: 12, top: 4, bottom: 4),
       child: Row(
-        mainAxisAlignment:
-            isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.end,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!isUser) _avatar(isUser),
-          if (!isUser) const SizedBox(width: 8),
           Flexible(
-            child: IntrinsicWidth(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Align(
-                    alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-                    child: _bubble(isUser),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppColors.userBubble,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(18),
+                  topRight: Radius.circular(18),
+                  bottomLeft: Radius.circular(18),
+                  bottomRight: Radius.circular(4),
+                ),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.08),
+                  width: 1,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.15),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
                   ),
-                // Action row: TTS + Copy + Metadata — only on complete assistant messages
-                if (!isUser && widget.message.text.isNotEmpty && !widget.message.isStreaming)
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  SelectableText(
+                    widget.message.text,
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 14.5,
+                      height: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    DateFormat.jm().format(widget.message.timestamp),
+                    style: TextStyle(
+                      color: AppColors.textDim.withValues(alpha: 0.35),
+                      fontSize: 9.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _avatar(true),
+        ],
+      ),
+    );
+  }
+
+  // ── AI message: no bubble, text on chat background with avatar ────────
+
+  Widget _buildAiMessage() {
+    final hasActions = widget.message.text.isNotEmpty && !widget.message.isStreaming;
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 12, right: 48, top: 4, bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _avatar(false),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // AI markdown content — directly on chat background
+                _aiMarkdown(),
+
+                // Timestamp
+                Padding(
+                  padding: const EdgeInsets.only(top: 3, left: 2),
+                  child: Text(
+                    DateFormat.jm().format(widget.message.timestamp),
+                    style: TextStyle(
+                      color: AppColors.textDim.withValues(alpha: 0.3),
+                      fontSize: 9.5,
+                    ),
+                  ),
+                ),
+
+                // Action bar: icon-only buttons
+                if (hasActions)
                   Padding(
-                    padding: const EdgeInsets.only(top: 2, left: 4, right: 4),
+                    padding: const EdgeInsets.only(top: 6, left: 0),
                     child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // TTS button
-                            GestureDetector(
-                              onTap: _toggleTts,
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    _isSpeaking
-                                        ? Icons.stop_circle_rounded
-                                        : Icons.volume_up_rounded,
-                                    size: 16,
-                                    color: _isSpeaking
-                                        ? AppColors.error
-                                        : AppColors.textDim.withValues(alpha: 0.6),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    _isSpeaking ? 'Stop' : 'Listen',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: _isSpeaking
-                                          ? AppColors.error
-                                          : AppColors.textDim.withValues(alpha: 0.6),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 14),
-                            // Copy button
-                            GestureDetector(
-                              onTap: () {
-                                Clipboard.setData(
-                                    ClipboardData(text: widget.message.text));
-                                HapticFeedback.lightImpact();
-                              },
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.copy_rounded,
-                                    size: 15,
-                                    color: AppColors.textDim.withValues(alpha: 0.6),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'Copy',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: AppColors.textDim.withValues(alpha: 0.6),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
+                        _actionIcon(
+                          icon: _isSpeaking
+                              ? Icons.stop_circle_rounded
+                              : Icons.volume_up_rounded,
+                          tooltip: _isSpeaking ? 'Stop' : 'Listen',
+                          color: _isSpeaking
+                              ? AppColors.error
+                              : AppColors.textDim.withValues(alpha: 0.5),
+                          onTap: _toggleTts,
                         ),
-                        // Metadata icons
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (widget.message.hasThinking) _buildMetadataIcon(Icons.lightbulb_outline, 'Thinking', _showThinkingModal),
-                            if (widget.message.hasSources || widget.message.hasParentChunks) _buildMetadataIcon(Icons.source_rounded, 'Sources', _showMergedSourcesModal),
-                          ],
+                        const SizedBox(width: 10),
+                        _actionIcon(
+                          icon: Icons.copy_rounded,
+                          tooltip: 'Copy',
+                          color: AppColors.textDim.withValues(alpha: 0.5),
+                          onTap: () {
+                            Clipboard.setData(
+                                ClipboardData(text: widget.message.text));
+                            HapticFeedback.lightImpact();
+                          },
                         ),
+                        if (widget.message.hasThinking) ...[
+                          const SizedBox(width: 10),
+                          _actionIcon(
+                            icon: Icons.lightbulb_outline,
+                            tooltip: 'Thinking',
+                            color: AppColors.textDim.withValues(alpha: 0.5),
+                            onTap: _showThinkingModal,
+                          ),
+                        ],
+                        if (widget.message.hasSources ||
+                            widget.message.hasParentChunks) ...[
+                          const SizedBox(width: 10),
+                          _actionIcon(
+                            icon: Icons.source_rounded,
+                            tooltip: 'Sources',
+                            color: AppColors.textDim.withValues(alpha: 0.5),
+                            onTap: _showMergedSourcesModal,
+                          ),
+                        ],
                       ],
                     ),
                   ),
               ],
             ),
           ),
-        ),
-        if (isUser) const SizedBox(width: 8),
-        if (isUser) _avatar(isUser),
         ],
+      ),
+    );
+  }
+
+  // ── Shared helpers ────────────────────────────────────────────────────
+
+  Widget _actionIcon({
+    required IconData icon,
+    required String tooltip,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: () {
+          HapticFeedback.lightImpact();
+          onTap();
+        },
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: AppColors.surfaceLight.withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, size: 15, color: color),
+        ),
       ),
     );
   }
@@ -203,66 +272,6 @@ class _ChatBubbleState extends State<ChatBubble> {
                 fit: BoxFit.cover,
               ),
             ),
-    );
-  }
-
-  Widget _bubble(bool isUser) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: isUser ? AppColors.userBubble : AppColors.aiBubble,
-        borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(18),
-          topRight: const Radius.circular(18),
-          bottomLeft: Radius.circular(isUser ? 18 : 4),
-          bottomRight: Radius.circular(isUser ? 4 : 18),
-        ),
-        border: Border.all(
-          color: isUser
-              ? AppColors.primary.withValues(alpha: 0.08)
-              : AppColors.divider,
-          width: 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.15),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          isUser ? _userText() : _aiMarkdown(),
-          const SizedBox(height: 4),
-          // Timestamp inside the bubble
-          Align(
-            alignment: Alignment.bottomRight,
-            child: Text(
-              DateFormat.jm().format(widget.message.timestamp),
-              style: TextStyle(
-                color: isUser
-                    ? AppColors.textDim.withValues(alpha: 0.5)
-                    : AppColors.textDim.withValues(alpha: 0.4),
-                fontSize: 10,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Plain text for user messages.
-  Widget _userText() {
-    return SelectableText(
-      widget.message.text,
-      style: const TextStyle(
-        color: AppColors.textPrimary,
-        fontSize: 14.5,
-        height: 1.5,
-      ),
     );
   }
 
@@ -371,26 +380,6 @@ class _ChatBubbleState extends State<ChatBubble> {
         a: const TextStyle(
           color: AppColors.primary,
           decoration: TextDecoration.underline,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMetadataIcon(IconData icon, String tooltip, VoidCallback onTap) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 14),
-      child: Tooltip(
-        message: tooltip,
-        child: GestureDetector(
-          onTap: () {
-            HapticFeedback.lightImpact();
-            onTap();
-          },
-          child: Icon(
-            icon,
-            size: 17,
-            color: AppColors.textDim.withValues(alpha: 0.8),
-          ),
         ),
       ),
     );

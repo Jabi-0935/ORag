@@ -95,102 +95,135 @@ class _ChatInputBarState extends State<ChatInputBar> {
     super.dispose();
   }
 
+  bool get _showActions =>
+      !widget.isGenerating && widget.enabled && !widget.isUploading;
+
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        border: Border(
-          top: BorderSide(color: AppColors.divider, width: 1),
-        ),
-      ),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      color: Colors.transparent,
       child: SafeArea(
         top: false,
-        child: Row(
-          children: [
-            if (!widget.isGenerating && widget.enabled && !widget.isUploading)
-              IconButton(
-                icon: const Icon(Icons.add_circle_outline_rounded, size: 28),
-                color: AppColors.textSecondary,
-                onPressed: widget.onAddFile,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
+        child: Container(
+          decoration: BoxDecoration(
+            color: _isListening
+                ? AppColors.primary.withValues(alpha: 0.05)
+                : AppColors.inputFill,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: _isListening
+                  ? AppColors.primary.withValues(alpha: 0.4)
+                  : AppColors.inputBorder,
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.2),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
               ),
-            if (!widget.isGenerating && widget.enabled && !widget.isUploading)
-              const SizedBox(width: 12),
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: _isListening
-                      ? AppColors.primary.withValues(alpha: 0.05)
-                      : AppColors.inputFill,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(
-                    color: _isListening
-                        ? AppColors.primary.withValues(alpha: 0.4)
-                        : AppColors.inputBorder,
-                    width: 1,
+            ],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // Add file button (inside, left side)
+              if (_showActions)
+                Padding(
+                  padding: const EdgeInsets.only(left: 6, bottom: 6),
+                  child: _buildSmallIconBtn(
+                    icon: Icons.add_rounded,
+                    color: AppColors.textSecondary,
+                    onPressed: widget.onAddFile,
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.2),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
+                ),
+
+              // Text field
+              Expanded(
+                child: KeyboardListener(
+                  focusNode: FocusNode(),
+                  onKeyEvent: (event) {
+                    if (event is KeyDownEvent &&
+                        event.logicalKey == LogicalKeyboardKey.enter &&
+                        !HardwareKeyboard.instance.isShiftPressed &&
+                        widget.enabled &&
+                        !widget.isGenerating) {
+                      widget.onSend();
+                    }
+                  },
+                  child: TextField(
+                    controller: widget.controller,
+                    enabled: widget.enabled && !widget.isGenerating,
+                    maxLines: 4,
+                    minLines: 1,
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 15,
                     ),
+                    decoration: InputDecoration(
+                      hintText: _hintText,
+                      hintStyle: const TextStyle(
+                        color: AppColors.textDim,
+                        fontSize: 15,
+                      ),
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.only(
+                        left: _showActions ? 4 : 18,
+                        right: 4,
+                        top: 12,
+                        bottom: 12,
+                      ),
+                    ),
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: widget.enabled && !widget.isGenerating
+                        ? (_) => widget.onSend()
+                        : null,
+                  ),
+                ),
+              ),
+
+              // Right-side action buttons (inside the input container)
+              Padding(
+                padding: const EdgeInsets.only(right: 5, bottom: 5),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Mic button
+                    if (_showActions) ...[
+                      _MicButton(
+                        isListening: _isListening,
+                        onTap: _toggleListening,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                    // Send or Stop button
+                    _actionButton(),
                   ],
                 ),
-                child: KeyboardListener(
-                        focusNode: FocusNode(),
-                        onKeyEvent: (event) {
-                          if (event is KeyDownEvent &&
-                              event.logicalKey == LogicalKeyboardKey.enter &&
-                              !HardwareKeyboard.instance.isShiftPressed &&
-                              widget.enabled &&
-                              !widget.isGenerating) {
-                            widget.onSend();
-                          }
-                        },
-                        child: TextField(
-                          controller: widget.controller,
-                          enabled: widget.enabled && !widget.isGenerating,
-                          maxLines: 4,
-                          minLines: 1,
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
-                            fontSize: 15,
-                          ),
-                          decoration: InputDecoration(
-                            hintText: _hintText,
-                            hintStyle: const TextStyle(
-                              color: AppColors.textDim,
-                              fontSize: 15,
-                            ),
-                            border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 12,
-                            ),
-                          ),
-                          textInputAction: TextInputAction.send,
-                          onSubmitted:
-                              widget.enabled && !widget.isGenerating ? (_) => widget.onSend() : null,
-                        ),
-                      ),
               ),
-            ),
-            const SizedBox(width: 8),
-            // Microphone button
-            if (!widget.isGenerating && widget.enabled && !widget.isUploading)
-              _MicButton(
-                isListening: _isListening,
-                onTap: _toggleListening,
-              ),
-            if (!widget.isGenerating && widget.enabled && !widget.isUploading)
-              const SizedBox(width: 4),
-            _actionButton(),
-          ],
+            ],
+          ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildSmallIconBtn({
+    required IconData icon,
+    required Color color,
+    required VoidCallback onPressed,
+  }) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          color: AppColors.surfaceLight.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(17),
+        ),
+        child: Icon(icon, size: 20, color: color),
       ),
     );
   }
@@ -228,18 +261,18 @@ class _MicButton extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        width: 38,
-        height: 38,
+        width: 34,
+        height: 34,
         decoration: BoxDecoration(
           color: isListening
               ? AppColors.error.withValues(alpha: 0.15)
               : AppColors.secondary.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(19),
+          borderRadius: BorderRadius.circular(17),
         ),
         child: Icon(
           isListening ? Icons.mic_off_rounded : Icons.mic_rounded,
           color: isListening ? AppColors.error : AppColors.secondary,
-          size: 20,
+          size: 18,
         ),
       ),
     );
@@ -257,18 +290,18 @@ class _SendButton extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        width: 44,
-        height: 44,
+        width: 36,
+        height: 36,
         decoration: BoxDecoration(
-          color:
-              active ? AppColors.primary : AppColors.primary.withValues(alpha: 0.2),
-          borderRadius: BorderRadius.circular(22),
+          color: active
+              ? AppColors.primary
+              : AppColors.primary.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(18),
         ),
         child: Icon(
           Icons.arrow_upward_rounded,
-          color:
-              active ? AppColors.background : AppColors.textDim,
-          size: 22,
+          color: active ? AppColors.background : AppColors.textDim,
+          size: 20,
         ),
       ),
     );
@@ -310,12 +343,12 @@ class _StopButtonState extends State<_StopButton>
         animation: _pulse,
         builder: (context, child) {
           return Container(
-            width: 44,
-            height: 44,
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
               color: AppColors.error
                   .withValues(alpha: 0.8 + 0.2 * _pulse.value),
-              borderRadius: BorderRadius.circular(22),
+              borderRadius: BorderRadius.circular(18),
               boxShadow: [
                 BoxShadow(
                   color: AppColors.error.withValues(alpha: 0.3 * _pulse.value),
@@ -327,7 +360,7 @@ class _StopButtonState extends State<_StopButton>
             child: const Icon(
               Icons.stop_rounded,
               color: Colors.white,
-              size: 22,
+              size: 20,
             ),
           );
         },
