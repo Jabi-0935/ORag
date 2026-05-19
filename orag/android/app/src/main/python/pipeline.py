@@ -335,10 +335,10 @@ def chat_direct(
         if not runtime.is_loaded():
             result = (False, "No LLM model loaded. Please load a GGUF model first.", "")
         else:
-            prompt = build_direct_prompt(question, history, summary)
+            prompt = build_direct_prompt(question, history, summary, response_style=response_style)
             from memory_management import check_memory_pressure
             pressure = check_memory_pressure()
-            max_tok = _estimate_max_tokens(question, pressure, response_style)
+            max_tok = _get_safe_max_tokens(pressure, response_style)
             answer = runtime.generate(prompt, stream_cb=stream_cb, max_tokens=max_tok).strip()
             thinking = getattr(runtime, 'last_thinking', '')
             result = (True, answer, thinking)
@@ -375,42 +375,23 @@ def _estimate_top_k(question: str) -> int:
     return base_k
 
 
-def _estimate_max_tokens(question: str, profile: dict, response_style: str = "concise") -> int:
+def _get_safe_max_tokens(profile: dict, response_style: str = "concise") -> int:
     """
-    Give complex / summary questions more token budget so answers are never
-    truncated mid-sentence.  Cap simple factual questions for lower latency.
-    Zero latency — pure string heuristics, no model call.
+    Return the max_tokens for generation, capped to prevent the
+    llama-server 'reduce the prompts' error.
 
-    response_style: 'concise' keeps answers tight, 'detailed' doubles budget.
-
-    Hard upper bound: never more than 40% of n_ctx so that RAG context
-    chunks always have at least 60% of the window — prevents the
-    llama-server 'reduce the prompts' error on long summary questions.
+    Concise mode: profile's base max_tokens, capped at 40% of n_ctx.
+    Detailed mode: uses the full 40% of n_ctx ceiling to allow
+        longer, well-structured answers.
     """
     from memory_management import get_profile as _get_profile
     n_ctx     = _get_profile().get("n_ctx", 2048)
     abs_max   = max(64, int(n_ctx * 0.40))   # 40% of n_ctx hard ceiling
-
     base = profile.get("max_tokens", 512)
-    q_lower = question.lower()
 
-    # 'detailed' style always gets higher budget
     if response_style == "detailed":
-        return min(base * 2, 1536, abs_max)
-
-    # Long-form questions deserve more room
-    long_signals = [
-        "summarize", "summary", "explain", "compare", "list all",
-        "describe", "what are all", "give me", "tell me about",
-        "elaborate", "overview", "in detail", "walk me through",
-    ]
-    if any(s in q_lower for s in long_signals):
-        return min(base * 2, 1536, abs_max)   # up to double, never exceed 40% n_ctx
-
-    # Short factual questions can be answered quickly
-    short_signals = ["who ", "when ", "where ", "what is ", "how many", "define "]
-    if any(s in q_lower for s in short_signals) and len(question.split()) < 12:
-        return min(base, 300, abs_max)        # faster first-token for simple facts
+        # Use the full 40% ceiling (not limited by profile base)
+        return abs_max
 
     return min(base, abs_max)
 
@@ -506,15 +487,14 @@ def ask(
                         "score": round(score, 4),
                     })
 
-                prompt = build_rag_prompt(context_chunks, question, history, summary)
+                prompt = build_rag_prompt(context_chunks, question, history, summary, response_style=response_style)
                 print(f"[RAG] Prompt length: {len(prompt)} chars")
 
-                # Adaptive token budget: summaries get more room, simple facts less
+                # Use memory profile default max_tokens with 40% n_ctx safety cap
                 from memory_management import check_memory_pressure
                 pressure = check_memory_pressure()
-                max_tok = _estimate_max_tokens(question, pressure, response_style)
+                max_tok = _get_safe_max_tokens(pressure, response_style)
                 print(f"[RAG] max_tokens={max_tok} (base={pressure.get('max_tokens', 512)})")
-
                 seen_doc_names = set()
                 for text, score, doc_id in results:
                     doc_name = doc_name_cache.get(doc_id, f"Document #{doc_id}")

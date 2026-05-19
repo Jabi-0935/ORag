@@ -230,7 +230,7 @@ class MainActivity : FlutterActivity() {
 						}
 					}
 				} else if (call.method == "stop") {
-					pythonExecutor.execute {
+					Thread {
 						try {
 							ensureApiModule().callAttr("stop_generation")
 							runOnUiThread { result.success(true) }
@@ -239,7 +239,7 @@ class MainActivity : FlutterActivity() {
 								result.error("ERROR", e.message, null)
 							}
 						}
-					}
+					}.start()
 				} else if (call.method == "clearMemory") {
 					pythonExecutor.execute {
 						try {

@@ -121,13 +121,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     color: AppColors.primary,
                     child: ListView(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
+                          horizontal: 16, vertical: 16),
                       children: [
                         _buildEngineStatusSection(),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 20),
                         _buildResourceMonitorSection(),
-                        const SizedBox(height: 16),
-                        _buildAboutSection(),
+                        const SizedBox(height: 20),
+                        _buildDevelopersSection(),
                         const SizedBox(height: 40),
                       ],
                     ),
@@ -138,28 +138,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---- App Bar ----
+
   Widget _buildAppBar() {
     return Container(
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + 8,
-        left: 4,
-        right: 16,
+        left: 8,
+        right: 8,
         bottom: 12,
       ),
       decoration: const BoxDecoration(
         color: AppColors.surface,
         border: Border(
-          bottom: BorderSide(color: AppColors.divider, width: 1),
+          bottom: BorderSide(color: AppColors.divider, width: 0.5),
         ),
       ),
       child: Row(
         children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back_rounded, size: 22),
-            color: AppColors.textPrimary,
+          _buildIconButton(
+            Icons.arrow_back_rounded,
             onPressed: () => Navigator.pop(context),
+            bordered: true,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 10),
           Container(
             width: 32,
             height: 32,
@@ -168,30 +170,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
               borderRadius: BorderRadius.circular(8),
             ),
             child: const Icon(Icons.settings_rounded,
-                size: 17, color: AppColors.primary),
+                size: 16, color: AppColors.primary),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           const Text(
             'Settings',
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
             ),
           ),
           const Spacer(),
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded, size: 21),
-            color: AppColors.textSecondary,
+          _buildIconButton(
+            Icons.refresh_rounded,
             onPressed: _loadHealth,
-            tooltip: 'Refresh',
           ),
         ],
       ),
     );
   }
 
-  // ---- Sections ----
+  Widget _buildIconButton(IconData icon,
+      {required VoidCallback onPressed, bool bordered = false}) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: bordered ? AppColors.surface : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          border: bordered
+              ? Border.all(color: AppColors.divider, width: 0.5)
+              : null,
+        ),
+        child: Icon(icon, size: 18, color: AppColors.textSecondary),
+      ),
+    );
+  }
+
+  // ---- Shared Widgets ----
 
   Widget _buildSectionHeader(String title, IconData icon, Color color) {
     return Padding(
@@ -199,21 +218,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Row(
         children: [
           Container(
-            width: 28,
-            height: 28,
+            width: 26,
+            height: 26,
             decoration: BoxDecoration(
               color: color.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(7),
             ),
-            child: Icon(icon, size: 15, color: color),
+            child: Icon(icon, size: 14, color: color),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Text(
             title,
             style: const TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
+              color: AppColors.textSecondary,
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              letterSpacing: 0.2,
             ),
           ),
         ],
@@ -225,15 +245,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.divider, width: 1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.divider, width: 0.5),
       ),
-      child: Column(children: children),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
+      ),
     );
   }
 
-  Widget _buildRow(String label, String value,
-      {Color? valueColor, Widget? trailing}) {
+  Widget _divider() => const Divider(color: AppColors.divider, height: 0.5, thickness: 0.5);
+
+  Widget _buildRow(String label, {Widget? trailing, String? value}) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Row(
@@ -245,18 +269,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   color: AppColors.textSecondary, fontSize: 13.5),
             ),
           ),
-          ?trailing,
-          if (trailing == null)
-            Flexible(
-              child: Text(
-                value,
-                style: TextStyle(
-                  color: valueColor ?? AppColors.textPrimary,
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w500,
-                ),
-                textAlign: TextAlign.end,
-                overflow: TextOverflow.ellipsis,
+          if (trailing != null) trailing,
+          if (trailing == null && value != null)
+            Text(
+              value,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 13.5,
+                fontWeight: FontWeight.w500,
               ),
             ),
         ],
@@ -264,68 +284,72 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildActionRow(String label, IconData icon, Color color, VoidCallback onTap) {
+  Widget _buildActionRow(
+      String label, IconData icon, Color color, Color bgColor, VoidCallback onTap) {
     return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
         child: Row(
           children: [
-            Icon(icon, size: 20, color: color),
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: bgColor,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, size: 17, color: color),
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
                 label,
                 style: TextStyle(
                   color: color,
-                  fontSize: 14,
+                  fontSize: 13.5,
                   fontWeight: FontWeight.w500,
                 ),
               ),
             ),
-            Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.textSecondary.withValues(alpha: 0.5)),
+            Icon(Icons.chevron_right_rounded,
+                size: 16,
+                color: AppColors.textSecondary.withValues(alpha: 0.4)),
           ],
         ),
       ),
     );
   }
 
-  Widget _statusDot(bool active) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: active ? AppColors.success : AppColors.error,
-            boxShadow: active
-                ? [
-                    BoxShadow(
-                      color: AppColors.success.withValues(alpha: 0.4),
-                      blurRadius: 6,
-                      spreadRadius: 1,
-                    )
-                  ]
-                : null,
+  Widget _buildStatusPill(bool active) {
+    final color = active ? AppColors.success : AppColors.error;
+    final bg = active
+        ? AppColors.success.withValues(alpha: 0.12)
+        : AppColors.error.withValues(alpha: 0.10);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
           ),
-        ),
-        const SizedBox(width: 8),
-        Text(
-          active ? 'Online' : 'Offline',
-          style: TextStyle(
-            color: active ? AppColors.success : AppColors.error,
-            fontSize: 13,
-            fontWeight: FontWeight.w500,
+          const SizedBox(width: 5),
+          Text(
+            active ? 'Online' : 'Offline',
+            style: TextStyle(
+                color: color, fontSize: 12, fontWeight: FontWeight.w500),
           ),
-        ),
-      ],
+        ],
+      ),
     );
-  }
-
-  Widget _divider() {
-    return const Divider(color: AppColors.divider, height: 1);
   }
 
   // ---- Engine Status ----
@@ -341,88 +365,176 @@ class _SettingsScreenState extends State<SettingsScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _buildSectionHeader(
-            'Engine Status', Icons.memory_rounded, AppColors.primary),
+            'Engine status', Icons.memory_rounded, AppColors.primary),
         _buildCard(children: [
-          _buildRow('Backend', backend),
-          _divider(),
-          _buildRow(
-            'Qwen LLM',
-            '',
-            trailing: _statusDot(qwenReady),
+          // Backend tag row
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Backend',
+                    style: TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11)),
+                const SizedBox(height: 5),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.laptop_rounded,
+                          size: 13, color: AppColors.primary),
+                      const SizedBox(width: 5),
+                      Text(
+                        backend,
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
           _divider(),
-          _buildRow(
-            'Nomic Embeddings',
-            '',
-            trailing: _statusDot(nomicReady),
+          _buildRow('Qwen LLM', trailing: _buildStatusPill(qwenReady)),
+          _divider(),
+          _buildRow('Nomic embeddings', trailing: _buildStatusPill(nomicReady)),
+          _divider(),
+          // Stat boxes
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                Expanded(child: _buildStatBox('Documents loaded', '$docCount')),
+                const SizedBox(width: 10),
+                Expanded(child: _buildStatBox('Total chunks', '$chunkCount')),
+              ],
+            ),
           ),
-          _divider(),
-          _buildRow('Documents Loaded', '$docCount'),
-          _divider(),
-          _buildRow('Total Chunks', '$chunkCount'),
         ]),
       ],
+    );
+  }
+
+  Widget _buildStatBox(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 11)),
+          const SizedBox(height: 4),
+          Text(value,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.w500,
+              )),
+        ],
+      ),
     );
   }
 
   // ---- Resource Monitor ----
 
   Widget _buildResourceMonitorSection() {
-    final appMem = (_resources['app_memory_mb'] as num?)?.toDouble() ?? 0.0;
-    final availMem = (_resources['available_ram_mb'] as num?)?.toDouble() ?? 0.0;
     final profile = _resources['profile_name'] as String? ?? 'Unknown';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildSectionHeader(
-            'Resource Monitor', Icons.monitor_heart_rounded, const Color(0xFF6C5CE7)),
+        _buildSectionHeader('Resources', Icons.monitor_heart_rounded,
+            const Color(0xFF0F6E56)),
         _buildCard(children: [
-          _buildRow('Device Profile', profile),
+          _buildRow('Device profile', value: profile),
           _divider(),
-          _buildRow('Total Memory Used', '${appMem.toStringAsFixed(0)} MB'),
+          _buildActionRow(
+            'Clear knowledge base',
+            Icons.delete_sweep_rounded,
+            const Color(0xFFA32D2D),
+            const Color(0xFFFCEBEB),
+            _clearDocs,
+          ),
           _divider(),
-          _buildRow('Available RAM', '${availMem.toStringAsFixed(0)} MB'),
-          _divider(),
-          _buildActionRow('Clear Knowledge Base', Icons.delete_sweep_rounded, AppColors.error, _clearDocs),
-          _divider(),
-          _buildActionRow('Clear Conversation History', Icons.clear_all_rounded, const Color(0xFFFF7675), _clearChat),
+          _buildActionRow(
+            'Clear conversation',
+            Icons.clear_all_rounded,
+            const Color(0xFF854F0B),
+            const Color(0xFFFAEEDA),
+            _clearChat,
+          ),
         ]),
       ],
     );
   }
 
+  // ---- Developers ----
 
+  Widget _buildDevelopersSection() {
+    const developers = [
+      ('Ismaeel', 'IS'),
+      ('Rashmitha', 'RA'),
+      ('Suchitha', 'SU'),
+      ('Mokshagna', 'MO'),
+    ];
 
-  Widget _buildAboutSection() {
-    const developers = ['Ismeel', 'Rashmitha', 'Suchitha', 'Mokshagna'];
+    const avatarColors = [
+      (Color(0xFFEEEDFE), Color(0xFF534AB7)),
+      (Color(0xFFE1F5EE), Color(0xFF0F6E56)),
+      (Color(0xFFFBEAF0), Color(0xFF993556)),
+      (Color(0xFFFAEEDA), Color(0xFF854F0B)),
+    ];
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _buildSectionHeader(
-            'Developers', Icons.people_alt_rounded, const Color(0xFF00B894)),
+            'Developers', Icons.people_alt_rounded, const Color(0xFF0F6E56)),
         _buildCard(
           children: [
             for (int i = 0; i < developers.length; i++) ...[
               if (i > 0) _divider(),
               Padding(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
                 child: Row(
                   children: [
                     Container(
-                      width: 30,
-                      height: 30,
+                      width: 32,
+                      height: 32,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: AppColors.primary.withValues(alpha: 0.10),
+                        color: avatarColors[i].$1,
                       ),
-                      child: const Icon(Icons.person_rounded,
-                          size: 16, color: AppColors.primary),
+                      child: Center(
+                        child: Text(
+                          developers[i].$2,
+                          style: TextStyle(
+                            color: avatarColors[i].$2,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      developers[i],
+                      developers[i].$1,
                       style: const TextStyle(
                         color: AppColors.textPrimary,
                         fontSize: 13.5,

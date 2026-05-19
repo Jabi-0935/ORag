@@ -44,6 +44,33 @@ _ANDROID_NATIVE_LIB_DIR: Optional[str] = None
 _ANDROID_FILES_DIR: Optional[str] = None
 
 
+class DualLogger:
+    """Redirects stdout/stderr to both the original stream and a log file."""
+    def __init__(self, original_stream, log_file_path):
+        self.original_stream = original_stream
+        self.log_file_path = log_file_path
+
+    def write(self, message):
+        if self.original_stream is not None:
+            try:
+                self.original_stream.write(message)
+            except Exception:
+                pass
+        if message:
+            try:
+                with open(self.log_file_path, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(message)
+            except Exception:
+                pass
+
+    def flush(self):
+        if self.original_stream is not None:
+            try:
+                self.original_stream.flush()
+            except Exception:
+                pass
+
+
 def set_android_paths(native_lib_dir: str, files_dir: str) -> None:
     """Called from Kotlin to inject Android-specific paths before init."""
     global _ANDROID_NATIVE_LIB_DIR, _ANDROID_FILES_DIR
@@ -51,6 +78,20 @@ def set_android_paths(native_lib_dir: str, files_dir: str) -> None:
     _ANDROID_FILES_DIR = files_dir
     os.environ["ANDROID_PRIVATE"] = files_dir
     print(f"[llm] Android paths injected: native_lib={native_lib_dir}, files={files_dir}")
+
+    # Set up DualLogger to output clean Python prints to a local file
+    try:
+        import sys
+        log_path = os.path.join(files_dir, "app_python.log")
+        # Clear/initialize the log file
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("--- Clean Python Log Started ---\n")
+        
+        sys.stdout = DualLogger(sys.stdout, log_path)
+        sys.stderr = DualLogger(sys.stderr, log_path)
+        print(f"[llm] Clean Python file logging initialized at: {log_path}")
+    except Exception as e:
+        print(f"[llm] Failed to initialize file logger: {e}")
 
 
 def _is_android() -> bool:
@@ -1028,6 +1069,9 @@ class LlamaCppModel:
         if think_filter is not None:
             think_filter.flush()
 
+        # Debug log: show full raw output for troubleshooting
+        print(f"[LLM] Raw output ({len(raw)} chars):\n{raw}")
+
         # Strip thinking blocks (captures the thinking text), then sanitize
         cleaned, thinking = _strip_thinking(raw)
         self._last_thinking = thinking
@@ -1046,6 +1090,10 @@ class LlamaCppModel:
                     top_p       = top_p,
                     stream      = True,
                 ):
+                    import api
+                    if getattr(api, "_stop_flag", False):
+                        print("[LLM] Stream stopped by user")
+                        break
                     token = chunk["choices"][0]["text"]
                     full += token
                     stream_cb(token)
@@ -1075,6 +1123,10 @@ class LlamaCppModel:
                 options = options,
                 stream  = True,
             ):
+                import api
+                if getattr(api, "_stop_flag", False):
+                    print("[LLM] Stream stopped by user")
+                    break
                 token = chunk.response
                 full += token
                 stream_cb(token)
@@ -1109,6 +1161,8 @@ def _strip_thinking(text: str) -> tuple:
 
     # Standard <think>...</think> (Qwen3, DeepSeek, GLM thinking variants)
     text = re.sub(r'<think>(.*?)</think>', _capture, text, flags=re.DOTALL)
+    # Extended <thinking>...</thinking> (Qwen3 sometimes uses this variant)
+    text = re.sub(r'<thinking>(.*?)</thinking>', _capture, text, flags=re.DOTALL)
     # Pipe-delimited variants  <|think|>...</|think|>
     text = re.sub(r'<\|think\|>(.*?)</\|think\|>', _capture, text, flags=re.DOTALL)
     # Some models wrap reasoning in triple-backtick reasoning blocks
@@ -1118,50 +1172,103 @@ def _strip_thinking(text: str) -> tuple:
     return text.strip(), thinking_text
 
 
+# All tag variants that models use for thinking blocks
+_THINK_OPEN_TAGS  = ("<thinking>", "<think>")
+_THINK_CLOSE_TAGS = ("</thinking>", "</think>")
+
+
+def _find_any(buf: str, tags: tuple) -> tuple:
+    """Find the earliest occurrence of any tag in buf. Returns (index, tag) or (-1, '')."""
+    best_idx = -1
+    best_tag = ''
+    for tag in tags:
+        idx = buf.find(tag)
+        if idx != -1 and (best_idx == -1 or idx < best_idx):
+            best_idx = idx
+            best_tag = tag
+    return best_idx, best_tag
+
+
 class _ThinkingStreamFilter:
     """
-    Wraps a stream_cb so that tokens inside <think>â€¦</think> blocks are
+    Wraps a stream_cb so that tokens inside thinking blocks are
     suppressed; only the real answer tokens are forwarded to the UI.
+
+    Handles both <think>/<thinking> tag variants and strips orphaned
+    closing tags that appear without a matching opener.
     """
     def __init__(self, cb):
         self._cb     = cb
         self._buf    = ""    # accumulates tokens we haven't decided about yet
-        self._depth  = 0     # nesting level inside <think> block
-        self._past   = False # True once we've seen </think>
+        self._depth  = 0     # nesting level inside think block
+        self._past   = False # True once we've seen a closing tag
 
     def __call__(self, token: str):
         self._buf += token
         while True:
             if self._depth == 0:
-                # Not inside a think block â€” look for opening tag
-                idx = self._buf.find("<think>")
-                if idx == -1:
-                    # No think tag anywhere â€” flush all buffered tokens
-                    if self._buf:
-                        self._cb(self._buf)
-                        self._buf = ""
-                    break
-                else:
-                    # Flush everything before the tag, then swallow from tag onward
-                    if idx > 0:
-                        self._cb(self._buf[:idx])
-                    self._buf  = self._buf[idx + len("<think>"):]
+                # Strip any orphaned closing tags at depth 0
+                close_idx, close_tag = _find_any(self._buf, _THINK_CLOSE_TAGS)
+                if close_idx != -1:
+                    if close_idx > 0:
+                        self._cb(self._buf[:close_idx])
+                    self._buf = self._buf[close_idx + len(close_tag):]
+                    self._past = True
+                    continue
+
+                # Look for opening tag
+                open_idx, open_tag = _find_any(self._buf, _THINK_OPEN_TAGS)
+                if open_idx != -1:
+                    if open_idx > 0:
+                        self._cb(self._buf[:open_idx])
+                    self._buf = self._buf[open_idx + len(open_tag):]
                     self._depth = 1
+                    continue
+                else:
+                    # No complete tag — hold back partial fragments
+                    safe, held = self._split_partial(self._buf)
+                    if safe:
+                        self._cb(safe)
+                    self._buf = held
+                    break
             else:
-                # Inside a think block â€” look for closing tag
-                idx = self._buf.find("</think>")
-                if idx == -1:
-                    # Haven't seen closing tag yet â€” keep buffering
+                # Inside a think block — look for closing tag
+                close_idx, close_tag = _find_any(self._buf, _THINK_CLOSE_TAGS)
+                if close_idx == -1:
                     break
                 else:
-                    self._buf   = self._buf[idx + len("</think>"):]
+                    self._buf   = self._buf[close_idx + len(close_tag):]
                     self._depth = 0
                     self._past  = True
+
+    @staticmethod
+    def _split_partial(buf: str) -> tuple:
+        """Split buffer into safe-to-flush and held-back portions.
+
+        If the buffer ends with a prefix of any thinking tag,
+        hold it back so we don't flush a partial tag to the UI.
+        """
+        # All possible partial prefixes of <think>, </think>,
+        # <thinking>, and </thinking>
+        _PARTIALS = (
+            "<thinking", "<thinkin", "<thinki", "<think", "<thin", "<thi", "<th", "<t",
+            "</thinking", "</thinkin", "</thinki", "</think", "</thin", "</thi", "</th", "</t", "</",
+            "<",
+        )
+        for p in _PARTIALS:
+            if buf.endswith(p):
+                return buf[:-len(p)], p
+        return buf, ""
 
     def flush(self):
         """Call after generation ends to emit any remaining buffered tokens."""
         if self._buf and self._depth == 0:
-            self._cb(self._buf)
+            # Final flush: strip any remaining orphaned tags
+            clean = self._buf
+            for tag in _THINK_OPEN_TAGS + _THINK_CLOSE_TAGS:
+                clean = clean.replace(tag, "")
+            if clean.strip():
+                self._cb(clean)
             self._buf = ""
 
 
@@ -1174,6 +1281,7 @@ def build_rag_prompt(
     question: str,
     history: list[tuple[str, str]] | None = None,
     summary: str = "",
+    response_style: str = "concise",
 ) -> str:
     """
     Build a RAG prompt using Qwen3.5 ChatML instruction format.
@@ -1181,6 +1289,9 @@ def build_rag_prompt(
 
     Adaptive: caps total context size based on the active memory profile's
     n_ctx so the prompt never overflows the KV cache.
+
+    response_style: 'concise' uses a brief-answer system prompt,
+                    'detailed' uses a thorough-answer system prompt.
 
     Token budget math (conservative):
       - 3.5 chars ≈ 1 token for English text
@@ -1211,14 +1322,23 @@ def build_rag_prompt(
 
     ctx_text = "\n\n---\n\n".join(capped)
 
-    system_msg = (
-        "You are an expert analyst. Answer using only the provided context.\n"
-        "Adapt your response length to the question: give concise, direct answers for simple or factual questions, "
-        "and detailed, comprehensive answers for complex, analytical, or summary questions.\n"
-        "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
-        "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
-        "Do not repeat the question."
-    )
+    if response_style == "detailed":
+        system_msg = (
+            "You are an expert analyst. Provide a complete, well-structured answer "
+            "using only the provided context. Cover the key points with supporting details.\n"
+            "You may wrap brief reasoning inside <think> and </think> tags if needed.\n"
+            "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
+            "Do not repeat the question. Do not write excessively long responses."
+        )
+    else:
+        system_msg = (
+            "You are an expert analyst. Give a brief, focused answer using only "
+            "the provided context. Summarize the key points in a few sentences.\n"
+            "When listing items, mention only the most important 2-3 with one-line descriptions.\n"
+            "Avoid detailed breakdowns, bullet-heavy formatting, or exhaustive lists.\n"
+            "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
+            "Do not repeat the question."
+        )
 
     if summary.strip():
         system_msg += "\n\nEarlier in this conversation (summary):\n" + summary.strip()
@@ -1272,19 +1392,27 @@ def build_direct_prompt(
     question: str,
     history: list[tuple[str, str]] | None = None,
     summary: str = "",
+    response_style: str = "concise",
 ) -> str:
     """
     Build a plain conversational prompt using Qwen 2.5's ChatML format.
     summary : compressed plain-text of older turns (no LLM call, first sentences).
     history : last 3 verbatim (user, assistant) pairs.
+    response_style: 'concise' for brief answers, 'detailed' for thorough answers.
     """
-    system_msg = (
-        "You are a highly capable AI assistant.\n"
-        "Adapt your response length to the question: give concise, direct answers for simple or factual questions, "
-        "and detailed, comprehensive answers for complex, analytical, or exploratory questions.\n"
-        "Wrap any necessary reasoning strictly inside <think> and </think> tags.\n"
-        "Do not repeat the question."
-    )
+    if response_style == "detailed":
+        system_msg = (
+            "You are a capable AI assistant. Provide a complete, well-structured answer "
+            "covering the key points with relevant details.\n"
+            "You may wrap brief reasoning inside <think> and </think> tags if needed.\n"
+            "Do not repeat the question. Do not write excessively long responses."
+        )
+    else:
+        system_msg = (
+            "You are a direct AI assistant. Answer clearly and concisely. "
+            "Get straight to the point.\n"
+            "Do not repeat the question."
+        )
     # Append compressed older context to system message so it takes fewer
     # tokens than full ChatML turns but still informs the model.
     if summary.strip():
