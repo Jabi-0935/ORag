@@ -36,6 +36,11 @@ class AppColors {
   static const Color inputFill = Color(0xFF111628);
   static const Color inputBorder = Color(0xFF252A45);
   static const Color shimmer = Color(0xFF2A3055);
+
+  // Glassmorphism & glow
+  static const Color glassBackground = Color(0xCC07081A); // ~80% opacity
+  static const Color glowPrimary = Color(0x3300D4AA);     // ~20% opacity
+  static const Color glowSecondary = Color(0x336C63FF);    // ~20% opacity
 }
 
 class AppTheme {

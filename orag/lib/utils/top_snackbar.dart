@@ -88,7 +88,7 @@ class _TopSnackBarWidgetState extends State<_TopSnackBarWidget>
     final topPadding = MediaQuery.of(context).padding.top;
 
     return Positioned(
-      top: topPadding + 8,
+      top: topPadding + 56,
       left: 16,
       right: 16,
       child: SlideTransition(
