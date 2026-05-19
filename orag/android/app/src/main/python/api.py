@@ -389,7 +389,7 @@ def chat(query):
         _is_generating = False
 
 
-def chat_stream(query, token_callback):
+def chat_stream(query, token_callback, response_style="concise"):
     """Streaming chat — calls token_callback for each generated token."""
     global _is_generating, _stop_flag
 
@@ -417,6 +417,7 @@ def chat_stream(query, token_callback):
             history=_conversation_history,
             summary=_conversation_summary,
             stream_cb=_on_token,
+            response_style=str(response_style),
         )
 
         if ok:
@@ -490,7 +491,7 @@ def clear_docs():
 #  RAG streaming query                                                 #
 # ------------------------------------------------------------------ #
 
-def ask_rag(query, token_callback):
+def ask_rag(query, token_callback, response_style="concise"):
     """RAG streaming query with source attribution, response caching,
     and conversation history so follow-up questions carry prior context."""
     global _is_generating, _stop_flag
@@ -537,6 +538,7 @@ def ask_rag(query, token_callback):
             history=_conversation_history,
             summary=_conversation_summary,
             stream_cb=_on_token,
+            response_style=str(response_style),
         )
 
         print("[RAG-STREAM] Response received")

@@ -322,11 +322,13 @@ def chat_direct(
     summary: str = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
+    response_style: str = "concise",
 ) -> tuple[bool, str, str]:
     """
     Chat directly with the LLM (no retrieval).
     history: last 3 verbatim (user, assistant) turns.
     summary: compressed plain-text summary of older turns.
+    response_style: 'concise' or 'detailed'
     Returns (success, answer, thinking_text).
     """
     try:
@@ -336,7 +338,7 @@ def chat_direct(
             prompt = build_direct_prompt(question, history, summary)
             from memory_management import check_memory_pressure
             pressure = check_memory_pressure()
-            max_tok = _estimate_max_tokens(question, pressure)
+            max_tok = _estimate_max_tokens(question, pressure, response_style)
             answer = runtime.generate(prompt, stream_cb=stream_cb, max_tokens=max_tok).strip()
             thinking = getattr(runtime, 'last_thinking', '')
             result = (True, answer, thinking)
@@ -373,11 +375,13 @@ def _estimate_top_k(question: str) -> int:
     return base_k
 
 
-def _estimate_max_tokens(question: str, profile: dict) -> int:
+def _estimate_max_tokens(question: str, profile: dict, response_style: str = "concise") -> int:
     """
     Give complex / summary questions more token budget so answers are never
     truncated mid-sentence.  Cap simple factual questions for lower latency.
     Zero latency — pure string heuristics, no model call.
+
+    response_style: 'concise' keeps answers tight, 'detailed' doubles budget.
 
     Hard upper bound: never more than 40% of n_ctx so that RAG context
     chunks always have at least 60% of the window — prevents the
@@ -389,6 +393,10 @@ def _estimate_max_tokens(question: str, profile: dict) -> int:
 
     base = profile.get("max_tokens", 512)
     q_lower = question.lower()
+
+    # 'detailed' style always gets higher budget
+    if response_style == "detailed":
+        return min(base * 2, 1536, abs_max)
 
     # Long-form questions deserve more room
     long_signals = [
@@ -427,10 +435,12 @@ def ask(
     summary: str = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
+    response_style: str = "concise",
 ) -> tuple[bool, str, list, str, list]:
     """
     Run a RAG query synchronously.
     Retrieves top-4 chunks for better context coverage.
+    response_style: 'concise' or 'detailed'
     Returns (success, answer, sources, thinking_text, parent_chunks_info) where:
       sources          = [{"doc_name": ..., "chunk_text": ..., "score": ...}, ...]
       thinking_text    = raw <think> block from Qwen3 (empty string if none)
@@ -502,7 +512,7 @@ def ask(
                 # Adaptive token budget: summaries get more room, simple facts less
                 from memory_management import check_memory_pressure
                 pressure = check_memory_pressure()
-                max_tok = _estimate_max_tokens(question, pressure)
+                max_tok = _estimate_max_tokens(question, pressure, response_style)
                 print(f"[RAG] max_tokens={max_tok} (base={pressure.get('max_tokens', 512)})")
 
                 seen_doc_names = set()

@@ -137,7 +137,7 @@ class PlatformService {
   /// Start streaming chat. Returns a record of (tokenStream, resultFuture).
   /// Tokens stream as they arrive. The result future resolves with
   /// {answer, thinking} JSON when generation is complete.
-  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) chatStream(String query) {
+  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) chatStream(String query, {String responseStyle = 'concise'}) {
     final tokenController = StreamController<String>();
     final resultCompleter = Completer<Map<String, dynamic>>();
 
@@ -160,6 +160,7 @@ class PlatformService {
 
     _method.invokeMethod('chatStream', {
       'query': query,
+      'response_style': responseStyle,
     }).then((result) {
       try {
         final json = jsonDecode(result as String) as Map<String, dynamic>;
@@ -252,7 +253,7 @@ class PlatformService {
   /// Start a RAG streaming query. Streams tokens, then returns sources via
   /// the MethodChannel result (JSON with answer + sources).
   /// Returns a record of (tokenStream, sourcesFuture).
-  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) ragStream(String query) {
+  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) ragStream(String query, {String responseStyle = 'concise'}) {
     final tokenController = StreamController<String>();
     final resultCompleter = Completer<Map<String, dynamic>>();
 
@@ -276,6 +277,7 @@ class PlatformService {
     // Invoke ragStream — the result contains sources JSON
     _method.invokeMethod('ragStream', {
       'query': query,
+      'response_style': responseStyle,
     }).then((result) {
       try {
         final json = jsonDecode(result as String) as Map<String, dynamic>;

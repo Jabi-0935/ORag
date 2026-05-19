@@ -9,7 +9,11 @@ import 'package:file_picker/file_picker.dart';
 import '../models/chat_message.dart';
 import '../services/platform_service.dart';
 
-// ---- State ----
+// Response style options (like ChatGPT's Instant/Thinking)
+enum ResponseStyle {
+  concise,   // Fast, direct answers
+  detailed,  // Thorough, comprehensive answers
+}
 
 class ChatState {
   final List<ChatMessage> messages;
@@ -21,6 +25,7 @@ class ChatState {
   final bool isUploading;
   final String uploadStatus;
   final String? activeDocumentName;
+  final ResponseStyle responseStyle;
 
   const ChatState({
     this.messages = const [],
@@ -32,6 +37,7 @@ class ChatState {
     this.isUploading = false,
     this.uploadStatus = '',
     this.activeDocumentName,
+    this.responseStyle = ResponseStyle.concise,
   });
 
   ChatState copyWith({
@@ -46,6 +52,7 @@ class ChatState {
     String? uploadStatus,
     String? activeDocumentName,
     bool clearActiveDocument = false,
+    ResponseStyle? responseStyle,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
@@ -57,6 +64,7 @@ class ChatState {
       isUploading: isUploading ?? this.isUploading,
       uploadStatus: uploadStatus ?? this.uploadStatus,
       activeDocumentName: clearActiveDocument ? null : (activeDocumentName ?? this.activeDocumentName),
+      responseStyle: responseStyle ?? this.responseStyle,
     );
   }
 }
@@ -174,6 +182,12 @@ class ChatController extends Notifier<ChatState> {
     state = state.copyWith(ragMode: false, clearActiveDocument: true);
   }
 
+  void setResponseStyle(ResponseStyle style) {
+    if (!state.isGenerating) {
+      state = state.copyWith(responseStyle: style);
+    }
+  }
+
   void _addSystemMessage(String text) {
     final sysMsg = ChatMessage(role: MessageRole.system, text: text);
     state = state.copyWith(messages: [...state.messages, sysMsg]);
@@ -240,7 +254,7 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
-    final chat = _platform.chatStream(text);
+    final chat = _platform.chatStream(text, responseStyle: state.responseStyle.name);
 
     _chatSub?.cancel();
     _chatSub = chat.tokens.listen(
@@ -303,7 +317,7 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
-    final rag = _platform.ragStream(text);
+    final rag = _platform.ragStream(text, responseStyle: state.responseStyle.name);
 
     _chatSub?.cancel();
     _chatSub = rag.tokens.listen(

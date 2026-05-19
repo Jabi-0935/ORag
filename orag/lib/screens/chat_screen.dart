@@ -190,9 +190,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Widget _buildAppBar(ChatState chatState) {
     return Container(
       padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 8,
+        top: MediaQuery.of(context).padding.top + 10,
         left: 16,
-        right: 4,
+        right: 12,
         bottom: 12,
       ),
       decoration: const BoxDecoration(
@@ -202,6 +202,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         ),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           // Logo
           Container(
@@ -228,6 +229,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 const Text(
                   'O-RAG',
@@ -235,29 +237,178 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     color: AppColors.textPrimary,
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
+                    height: 1.2,
                   ),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 3),
                 _buildModeBadge(chatState),
               ],
             ),
           ),
 
+          const SizedBox(width: 8),
+
+          // Response style dropdown (ChatGPT-style)
+          _buildStyleDropdown(chatState),
+
+          const SizedBox(width: 6),
+
           // Documents button
-          IconButton(
-            icon: const Icon(Icons.folder_open_rounded, size: 21),
-            tooltip: 'Documents',
-            onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
-            color: AppColors.textSecondary,
+          SizedBox(
+            width: 36,
+            height: 36,
+            child: IconButton(
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.folder_open_rounded, size: 20),
+              tooltip: 'Documents',
+              onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+              color: AppColors.textSecondary,
+            ),
           ),
 
+          const SizedBox(width: 2),
+
           // Settings button
-          IconButton(
-            icon: const Icon(Icons.settings_outlined, size: 21),
-            tooltip: 'Settings',
-            onPressed: _openSettings,
-            color: AppColors.textSecondary,
+          SizedBox(
+            width: 36,
+            height: 36,
+            child: IconButton(
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.settings_outlined, size: 20),
+              tooltip: 'Settings',
+              onPressed: _openSettings,
+              color: AppColors.textSecondary,
+            ),
           ),
+        ],
+      ),
+    );
+  }
+  Widget _buildStyleDropdown(ChatState chatState) {
+    final style = chatState.responseStyle;
+    final isConcise = style == ResponseStyle.concise;
+    
+    return PopupMenuButton<ResponseStyle>(
+      onSelected: (selected) {
+        HapticFeedback.selectionClick();
+        ref.read(chatControllerProvider.notifier).setResponseStyle(selected);
+      },
+      offset: const Offset(0, 40),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      color: AppColors.surface,
+      itemBuilder: (context) => [
+        _buildStyleMenuItem(
+          ResponseStyle.concise,
+          Icons.bolt_rounded,
+          'Concise',
+          'Fast, direct answers',
+          style == ResponseStyle.concise,
+        ),
+        _buildStyleMenuItem(
+          ResponseStyle.detailed,
+          Icons.auto_awesome_rounded,
+          'Detailed',
+          'Thorough, comprehensive',
+          style == ResponseStyle.detailed,
+        ),
+      ],
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceLight.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: AppColors.divider,
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isConcise ? Icons.bolt_rounded : Icons.auto_awesome_rounded,
+              size: 14,
+              color: isConcise ? AppColors.warning : AppColors.secondary,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              isConcise ? 'Concise' : 'Detailed',
+              style: TextStyle(
+                color: isConcise ? AppColors.warning : AppColors.secondary,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(width: 2),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 14,
+              color: AppColors.textDim.withValues(alpha: 0.5),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  PopupMenuEntry<ResponseStyle> _buildStyleMenuItem(
+    ResponseStyle value,
+    IconData icon,
+    String label,
+    String subtitle,
+    bool isSelected,
+  ) {
+    return PopupMenuItem<ResponseStyle>(
+      value: value,
+      child: Row(
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: (isSelected ? AppColors.primary : AppColors.textDim)
+                  .withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              icon,
+              size: 16,
+              color: isSelected ? AppColors.primary : AppColors.textDim,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    color: AppColors.textDim,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (isSelected)
+            const Icon(
+              Icons.check_rounded,
+              size: 18,
+              color: AppColors.primary,
+            ),
         ],
       ),
     );
