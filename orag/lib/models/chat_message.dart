@@ -64,7 +64,7 @@ class ChatMessage {
   List<SourceAttribution> sources;
   String? responseStyle;
 
-  /// Raw <think>…</think> reasoning block captured from Qwen3.
+  /// Raw thinking block captured from Qwen3.
   /// Empty string if the model produced no thinking block.
   String thinkingText;
 
@@ -80,9 +80,9 @@ class ChatMessage {
     this.thinkingText = '',
     List<ParentChunk>? parentChunks,
     this.responseStyle,
-  })  : timestamp = timestamp ?? DateTime.now(),
-        sources = sources ?? [],
-        parentChunks = parentChunks ?? [];
+  }) : timestamp = timestamp ?? DateTime.now(),
+       sources = sources ?? [],
+       parentChunks = parentChunks ?? [];
 
   bool get isUser => role == MessageRole.user;
   bool get isAssistant => role == MessageRole.assistant;
@@ -114,16 +114,22 @@ class ChatMessage {
       (r) => r.name == json['role'],
       orElse: () => MessageRole.assistant,
     );
-    final srcList = (json['sources'] as List?)?.map(
-      (s) => SourceAttribution.fromJson(s as Map<String, dynamic>),
-    ).toList() ?? [];
-    final chunkList = (json['parent_chunks'] as List?)?.map(
-      (c) => ParentChunk.fromJson(c as Map<String, dynamic>),
-    ).toList() ?? [];
+    final srcList =
+        (json['sources'] as List?)
+            ?.map((s) => SourceAttribution.fromJson(s as Map<String, dynamic>))
+            .toList() ??
+        [];
+    final chunkList =
+        (json['parent_chunks'] as List?)
+            ?.map((c) => ParentChunk.fromJson(c as Map<String, dynamic>))
+            .toList() ??
+        [];
     return ChatMessage(
       role: role,
       text: json['text'] as String? ?? '',
-      timestamp: DateTime.tryParse(json['timestamp'] as String? ?? '') ?? DateTime.now(),
+      timestamp:
+          DateTime.tryParse(json['timestamp'] as String? ?? '') ??
+          DateTime.now(),
       sources: srcList,
       thinkingText: json['thinking_text'] as String? ?? '',
       parentChunks: chunkList,

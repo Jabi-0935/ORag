@@ -16,6 +16,7 @@ dependencies:
   speech_to_text: ^7.0.0
   flutter_tts: ^4.2.0
   flutter_riverpod: ^2.6.1
+  shared_preferences: ^2.3.3
   intl: ^0.20.2
   cupertino_icons: ^1.0.8
 

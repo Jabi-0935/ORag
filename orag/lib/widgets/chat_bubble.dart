@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:intl/intl.dart';
 import '../models/chat_message.dart';
 import '../theme/app_theme.dart';
 import 'thinking_dropdown.dart';
@@ -66,6 +65,9 @@ class _ChatBubbleState extends State<ChatBubble> {
   // ── User message: right-aligned colored bubble with avatar ────────────
 
   Widget _buildUserMessage() {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return Padding(
       padding: const EdgeInsets.only(left: 48, right: 12, top: 4, bottom: 4),
       child: Row(
@@ -76,7 +78,7 @@ class _ChatBubbleState extends State<ChatBubble> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
-                color: AppColors.userBubble,
+                color: colors.userBubble,
                 borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(18),
                   topRight: Radius.circular(18),
@@ -84,14 +86,14 @@ class _ChatBubbleState extends State<ChatBubble> {
                   bottomRight: Radius.circular(4),
                 ),
                 border: Border.all(
-                  color: AppColors.primary.withValues(alpha: 0.08),
+                  color: scheme.primary.withValues(alpha: 0.10),
                   width: 1,
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.15),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
+                    color: colors.shadow.withValues(alpha: 0.14),
+                    blurRadius: 12,
+                    offset: const Offset(0, 5),
                   ),
                 ],
               ),
@@ -100,8 +102,8 @@ class _ChatBubbleState extends State<ChatBubble> {
                 children: [
                   SelectableText(
                     widget.message.text,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
+                    style: TextStyle(
+                      color: colors.textPrimary,
                       fontSize: 14.5,
                       height: 1.5,
                     ),
@@ -120,7 +122,9 @@ class _ChatBubbleState extends State<ChatBubble> {
   // ── AI message: no bubble, text on chat background with avatar ────────
 
   Widget _buildAiMessage() {
-    final hasActions = widget.message.text.isNotEmpty && !widget.message.isStreaming;
+    final colors = context.colors;
+    final hasActions =
+        widget.message.text.isNotEmpty && !widget.message.isStreaming;
 
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 48, top: 4, bottom: 4),
@@ -142,8 +146,8 @@ class _ChatBubbleState extends State<ChatBubble> {
                         : Icons.auto_awesome_rounded,
                     size: 16,
                     color: widget.message.responseStyle == 'concise'
-                        ? Colors.amber
-                        : Colors.blue,
+                        ? colors.warning
+                        : Theme.of(context).colorScheme.secondary,
                   ),
                 ),
               ],
@@ -169,18 +173,19 @@ class _ChatBubbleState extends State<ChatBubble> {
                               : Icons.volume_up_rounded,
                           tooltip: _isSpeaking ? 'Stop' : 'Listen',
                           color: _isSpeaking
-                              ? AppColors.error
-                              : AppColors.textDim.withValues(alpha: 0.5),
+                              ? colors.error
+                              : colors.textDim.withValues(alpha: 0.62),
                           onTap: _toggleTts,
                         ),
                         const SizedBox(width: 10),
                         _actionIcon(
                           icon: Icons.copy_rounded,
                           tooltip: 'Copy',
-                          color: AppColors.textDim.withValues(alpha: 0.5),
+                          color: colors.textDim.withValues(alpha: 0.62),
                           onTap: () {
                             Clipboard.setData(
-                                ClipboardData(text: widget.message.text));
+                              ClipboardData(text: widget.message.text),
+                            );
                             HapticFeedback.lightImpact();
                           },
                         ),
@@ -189,7 +194,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                           _actionIcon(
                             icon: Icons.lightbulb_outline,
                             tooltip: 'Thinking',
-                            color: AppColors.textDim.withValues(alpha: 0.5),
+                            color: colors.textDim.withValues(alpha: 0.62),
                             onTap: _showThinkingModal,
                           ),
                         ],
@@ -199,7 +204,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                           _actionIcon(
                             icon: Icons.source_rounded,
                             tooltip: 'Sources',
-                            color: AppColors.textDim.withValues(alpha: 0.5),
+                            color: colors.textDim.withValues(alpha: 0.62),
                             onTap: _showMergedSourcesModal,
                           ),
                         ],
@@ -222,6 +227,8 @@ class _ChatBubbleState extends State<ChatBubble> {
     required Color color,
     required VoidCallback onTap,
   }) {
+    final colors = context.colors;
+
     return Tooltip(
       message: tooltip,
       child: GestureDetector(
@@ -233,7 +240,7 @@ class _ChatBubbleState extends State<ChatBubble> {
           width: 28,
           height: 28,
           decoration: BoxDecoration(
-            color: AppColors.surfaceLight.withValues(alpha: 0.4),
+            color: colors.surfaceLight.withValues(alpha: 0.58),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Icon(icon, size: 15, color: color),
@@ -243,111 +250,99 @@ class _ChatBubbleState extends State<ChatBubble> {
   }
 
   Widget _avatar(bool isUser) {
+    final scheme = Theme.of(context).colorScheme;
+
     return Container(
       width: 32,
       height: 32,
       margin: const EdgeInsets.only(top: 2),
       decoration: BoxDecoration(
         color: isUser
-            ? AppColors.primary.withValues(alpha: 0.15)
+            ? scheme.primary.withValues(alpha: 0.13)
             : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
         border: !isUser
             ? Border.all(
-                color: AppColors.secondary.withValues(alpha: 0.3),
+                color: scheme.secondary.withValues(alpha: 0.30),
                 width: 1,
               )
             : null,
       ),
       child: isUser
-          ? const Icon(
-              Icons.person_rounded,
-              size: 18,
-              color: AppColors.primary,
-            )
+          ? Icon(Icons.person_rounded, size: 18, color: scheme.primary)
           : ClipRRect(
               borderRadius: BorderRadius.circular(11),
-              child: Image.asset(
-                'assets/logo.png',
-                fit: BoxFit.cover,
-              ),
+              child: Image.asset('assets/logo.png', fit: BoxFit.cover),
             ),
     );
   }
 
   /// Markdown-rendered text for AI messages.
   Widget _aiMarkdown() {
-    final text =
-        widget.message.text.isEmpty && widget.message.isStreaming ? ' ' : widget.message.text;
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+    final text = widget.message.text.isEmpty && widget.message.isStreaming
+        ? ' '
+        : widget.message.text;
 
     return MarkdownBody(
       data: text,
       selectable: true,
       styleSheet: MarkdownStyleSheet(
         // Body text
-        p: const TextStyle(
-          color: AppColors.textPrimary,
-          fontSize: 14.5,
-          height: 1.6,
-        ),
+        p: TextStyle(color: colors.textPrimary, fontSize: 14.5, height: 1.6),
         // Bold
-        strong: const TextStyle(
-          color: AppColors.textPrimary,
+        strong: TextStyle(
+          color: colors.textPrimary,
           fontWeight: FontWeight.w700,
         ),
         // Italic
-        em: const TextStyle(
-          color: AppColors.textPrimary,
-          fontStyle: FontStyle.italic,
-        ),
+        em: TextStyle(color: colors.textPrimary, fontStyle: FontStyle.italic),
         // Inline code + code block text (same property)
         code: TextStyle(
-          color: AppColors.primary,
-          backgroundColor: AppColors.surfaceLight.withValues(alpha: 0.6),
+          color: scheme.primary,
+          backgroundColor: colors.surfaceLight.withValues(alpha: 0.72),
           fontSize: 13,
           fontFamily: 'monospace',
         ),
         // Code block container
         codeblockDecoration: BoxDecoration(
-          color: AppColors.surface,
+          color: colors.surface,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.divider, width: 1),
+          border: Border.all(color: colors.divider, width: 1),
         ),
         codeblockPadding: const EdgeInsets.all(12),
         // Headings
-        h1: const TextStyle(
-          color: AppColors.textPrimary,
+        h1: TextStyle(
+          color: colors.textPrimary,
           fontSize: 20,
           fontWeight: FontWeight.w700,
           height: 1.4,
         ),
-        h2: const TextStyle(
-          color: AppColors.textPrimary,
+        h2: TextStyle(
+          color: colors.textPrimary,
           fontSize: 18,
           fontWeight: FontWeight.w600,
           height: 1.4,
         ),
-        h3: const TextStyle(
-          color: AppColors.textPrimary,
+        h3: TextStyle(
+          color: colors.textPrimary,
           fontSize: 16,
           fontWeight: FontWeight.w600,
           height: 1.4,
         ),
         // List bullets
-        listBullet: const TextStyle(
-          color: AppColors.primary,
-          fontSize: 14.5,
-        ),
+        listBullet: TextStyle(color: scheme.primary, fontSize: 14.5),
         // Blockquote
-        blockquote: const TextStyle(
-          color: AppColors.textSecondary,
+        blockquote: TextStyle(
+          color: colors.textSecondary,
           fontSize: 14,
           fontStyle: FontStyle.italic,
         ),
         blockquoteDecoration: BoxDecoration(
           border: Border(
             left: BorderSide(
-              color: AppColors.secondary.withValues(alpha: 0.4),
+              color: scheme.secondary.withValues(alpha: 0.4),
               width: 3,
             ),
           ),
@@ -355,30 +350,19 @@ class _ChatBubbleState extends State<ChatBubble> {
         blockquotePadding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
         // Horizontal rule
         horizontalRuleDecoration: BoxDecoration(
-          border: Border(
-            top: BorderSide(
-              color: AppColors.divider,
-              width: 1,
-            ),
-          ),
+          border: Border(top: BorderSide(color: colors.divider, width: 1)),
         ),
         // Table
-        tableHead: const TextStyle(
-          color: AppColors.textPrimary,
+        tableHead: TextStyle(
+          color: colors.textPrimary,
           fontWeight: FontWeight.w600,
           fontSize: 13,
         ),
-        tableBody: const TextStyle(
-          color: AppColors.textSecondary,
-          fontSize: 13,
-        ),
-        tableBorder: TableBorder.all(
-          color: AppColors.divider,
-          width: 1,
-        ),
+        tableBody: TextStyle(color: colors.textSecondary, fontSize: 13),
+        tableBorder: TableBorder.all(color: colors.divider, width: 1),
         // Links
-        a: const TextStyle(
-          color: AppColors.primary,
+        a: TextStyle(
+          color: scheme.primary,
           decoration: TextDecoration.underline,
         ),
       ),
@@ -393,7 +377,10 @@ class _ChatBubbleState extends State<ChatBubble> {
       builder: (context) => _buildModalContainer(
         title: 'Model Thinking',
         icon: Icons.lightbulb_outline,
-        child: ThinkingDropdown(thinkingText: widget.message.thinkingText, initiallyExpanded: true),
+        child: ThinkingDropdown(
+          thinkingText: widget.message.thinkingText,
+          initiallyExpanded: true,
+        ),
       ),
     );
   }
@@ -415,14 +402,23 @@ class _ChatBubbleState extends State<ChatBubble> {
     );
   }
 
-  Widget _buildModalContainer({required String title, required IconData icon, required Widget child}) {
+  Widget _buildModalContainer({
+    required String title,
+    required IconData icon,
+    required Widget child,
+  }) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return Container(
       padding: const EdgeInsets.only(top: 12),
-      decoration: const BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.8),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -430,7 +426,7 @@ class _ChatBubbleState extends State<ChatBubble> {
             width: 40,
             height: 4,
             decoration: BoxDecoration(
-              color: AppColors.divider,
+              color: colors.divider,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -439,12 +435,12 @@ class _ChatBubbleState extends State<ChatBubble> {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
               children: [
-                Icon(icon, size: 20, color: AppColors.primary),
+                Icon(icon, size: 20, color: scheme.primary),
                 const SizedBox(width: 8),
                 Text(
                   title,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: colors.textPrimary,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
@@ -486,6 +482,7 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     // Build a merged list of documents with their context chunks
     final Map<String, _DocSourceInfo> docMap = {};
 
@@ -493,7 +490,9 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
     for (final src in widget.sources) {
       final key = src.docName;
       docMap.putIfAbsent(key, () => _DocSourceInfo(docName: key));
-      docMap[key]!.score = src.score > docMap[key]!.score ? src.score : docMap[key]!.score;
+      docMap[key]!.score = src.score > docMap[key]!.score
+          ? src.score
+          : docMap[key]!.score;
     }
 
     // Add parent chunks grouped by doc name
@@ -510,11 +509,11 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
       ..sort((a, b) => b.score.compareTo(a.score));
 
     if (docList.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.all(16),
+      return Padding(
+        padding: const EdgeInsets.all(16),
         child: Text(
           'No source information available.',
-          style: TextStyle(color: AppColors.textDim, fontSize: 13),
+          style: TextStyle(color: colors.textDim, fontSize: 13),
         ),
       );
     }
@@ -528,6 +527,8 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
   }
 
   Widget _buildDocItem(_DocSourceInfo doc) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
     final isExpanded = _expandedDocs.contains(doc.docName);
     final isPdf = doc.docName.toLowerCase().endsWith('.pdf');
     final hasChunks = doc.chunks.isNotEmpty;
@@ -535,10 +536,10 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: AppColors.surface,
+        color: colors.surface,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: AppColors.secondary.withValues(alpha: 0.2),
+          color: scheme.secondary.withValues(alpha: 0.2),
           width: 1,
         ),
       ),
@@ -549,12 +550,12 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
           InkWell(
             onTap: hasChunks
                 ? () => setState(() {
-                      if (isExpanded) {
-                        _expandedDocs.remove(doc.docName);
-                      } else {
-                        _expandedDocs.add(doc.docName);
-                      }
-                    })
+                    if (isExpanded) {
+                      _expandedDocs.remove(doc.docName);
+                    } else {
+                      _expandedDocs.add(doc.docName);
+                    }
+                  })
                 : null,
             borderRadius: BorderRadius.circular(12),
             child: Padding(
@@ -562,16 +563,18 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
               child: Row(
                 children: [
                   Icon(
-                    isPdf ? Icons.picture_as_pdf_rounded : Icons.text_snippet_rounded,
+                    isPdf
+                        ? Icons.picture_as_pdf_rounded
+                        : Icons.text_snippet_rounded,
                     size: 16,
-                    color: isPdf ? AppColors.error : AppColors.primary,
+                    color: isPdf ? colors.error : scheme.primary,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       doc.docName,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
+                      style: TextStyle(
+                        color: colors.textPrimary,
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                       ),
@@ -586,10 +589,10 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
                     AnimatedRotation(
                       turns: isExpanded ? 0.5 : 0.0,
                       duration: const Duration(milliseconds: 200),
-                      child: const Icon(
+                      child: Icon(
                         Icons.keyboard_arrow_down_rounded,
                         size: 18,
-                        color: AppColors.textDim,
+                        color: colors.textDim,
                       ),
                     ),
                   ],
@@ -614,17 +617,20 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
   }
 
   Widget _buildChunkList(List<ParentChunk> chunks) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Divider(color: AppColors.divider, height: 1),
+          Divider(color: colors.divider, height: 1),
           const SizedBox(height: 6),
           Text(
             'Context used · ${chunks.length} chunk${chunks.length > 1 ? 's' : ''}',
             style: TextStyle(
-              color: AppColors.primary.withValues(alpha: 0.7),
+              color: scheme.primary.withValues(alpha: 0.7),
               fontSize: 11,
               fontWeight: FontWeight.w500,
             ),
@@ -637,24 +643,23 @@ class _MergedSourcesContentState extends State<_MergedSourcesContent> {
   }
 
   Widget _buildChunkItem(ParentChunk chunk) {
+    final colors = context.colors;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Container(
         constraints: const BoxConstraints(maxHeight: 160),
         decoration: BoxDecoration(
-          color: AppColors.surfaceLight.withValues(alpha: 0.5),
+          color: colors.surfaceLight.withValues(alpha: 0.62),
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: AppColors.divider,
-            width: 1,
-          ),
+          border: Border.all(color: colors.divider, width: 1),
         ),
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(10),
           child: Text(
             chunk.text,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
+            style: TextStyle(
+              color: colors.textSecondary,
               fontSize: 11,
               height: 1.5,
             ),
@@ -671,10 +676,9 @@ class _DocSourceInfo {
   double score;
   final List<ParentChunk> chunks;
 
-  _DocSourceInfo({
-    required this.docName,
-    List<ParentChunk>? chunks,
-  }) : score = 0.0, chunks = chunks ?? [];
+  _DocSourceInfo({required this.docName, List<ParentChunk>? chunks})
+    : score = 0.0,
+      chunks = chunks ?? [];
 }
 
 /// Relevance badge widget used in the merged sources display.
@@ -685,7 +689,7 @@ class _RelevanceBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final label = _label(score);
-    final color = _color(score);
+    final color = _color(context, score);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
@@ -711,10 +715,11 @@ class _RelevanceBadge extends StatelessWidget {
     return 'WEAK';
   }
 
-  Color _color(double s) {
-    if (s >= 0.018) return AppColors.success;
-    if (s >= 0.010) return AppColors.primary;
-    if (s >= 0.004) return AppColors.warning;
-    return AppColors.textDim;
+  Color _color(BuildContext context, double s) {
+    final colors = context.colors;
+    if (s >= 0.018) return colors.success;
+    if (s >= 0.010) return Theme.of(context).colorScheme.primary;
+    if (s >= 0.004) return colors.warning;
+    return colors.textDim;
   }
 }

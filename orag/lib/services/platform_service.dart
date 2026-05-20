@@ -65,11 +65,13 @@ class PlatformService {
           final map = event is Map
               ? event.cast<String, dynamic>()
               : jsonDecode(event.toString()) as Map<String, dynamic>;
-          addStatus(InitStatus(
-            state: _parseState(map['state'] as String? ?? 'idle'),
-            progress: (map['progress'] as num?)?.toDouble() ?? 0.0,
-            message: map['message'] as String? ?? '',
-          ));
+          addStatus(
+            InitStatus(
+              state: _parseState(map['state'] as String? ?? 'idle'),
+              progress: (map['progress'] as num?)?.toDouble() ?? 0.0,
+              message: map['message'] as String? ?? '',
+            ),
+          );
         } catch (e) {
           debugPrint('[PlatformService] initPython event parse error: $e');
         }
@@ -85,15 +87,17 @@ class PlatformService {
     );
 
     // 2. Trigger init (fire-and-forget — progress comes via EventChannel)
-    _method.invokeMethod('initPython', {'model_path': modelPath}).catchError(
-      (e) {
-        addStatus(InitStatus(
+    _method.invokeMethod('initPython', {'model_path': modelPath}).catchError((
+      e,
+    ) {
+      addStatus(
+        InitStatus(
           state: InitState.error,
           progress: 1.0,
           message: 'Init failed: $e',
-        ));
-      },
-    );
+        ),
+      );
+    });
 
     // 3. Polling fallback: every 3 seconds, check cached status
     //    This is non-blocking on Android (returns cached Kotlin-level state).
@@ -103,12 +107,14 @@ class PlatformService {
         eventSub?.cancel();
         return;
       }
-      getStatus().then((status) {
-        if (finished) return;
-        addStatus(status);
-      }).catchError((e) {
-        debugPrint('[PlatformService] polling fallback error: $e');
-      });
+      getStatus()
+          .then((status) {
+            if (finished) return;
+            addStatus(status);
+          })
+          .catchError((e) {
+            debugPrint('[PlatformService] polling fallback error: $e');
+          });
     });
 
     return controller.stream;
@@ -137,7 +143,10 @@ class PlatformService {
   /// Start streaming chat. Returns a record of (tokenStream, resultFuture).
   /// Tokens stream as they arrive. The result future resolves with
   /// {answer, thinking} JSON when generation is complete.
-  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) chatStream(String query, {String responseStyle = 'concise'}) {
+  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) chatStream(
+    String query, {
+    String responseStyle = 'concise',
+  }) {
     final tokenController = StreamController<String>();
     final resultCompleter = Completer<Map<String, dynamic>>();
 
@@ -158,23 +167,26 @@ class PlatformService {
       },
     );
 
-    _method.invokeMethod('chatStream', {
-      'query': query,
-      'response_style': responseStyle,
-    }).then((result) {
-      try {
-        final json = jsonDecode(result as String) as Map<String, dynamic>;
-        resultCompleter.complete(json);
-      } catch (e) {
-        resultCompleter.complete({});
-      }
-    }).catchError((e) {
-      if (!tokenController.isClosed) {
-        tokenController.addError(e);
-        tokenController.close();
-      }
-      resultCompleter.complete({});
-    });
+    _method
+        .invokeMethod('chatStream', {
+          'query': query,
+          'response_style': responseStyle,
+        })
+        .then((result) {
+          try {
+            final json = jsonDecode(result as String) as Map<String, dynamic>;
+            resultCompleter.complete(json);
+          } catch (e) {
+            resultCompleter.complete({});
+          }
+        })
+        .catchError((e) {
+          if (!tokenController.isClosed) {
+            tokenController.addError(e);
+            tokenController.close();
+          }
+          resultCompleter.complete({});
+        });
 
     return (tokens: tokenController.stream, result: resultCompleter.future);
   }
@@ -199,10 +211,9 @@ class PlatformService {
   /// Returns {success: bool, message: String}
   Future<Map<String, dynamic>> uploadDocument(String filePath) async {
     try {
-      final result = await _method.invokeMethod(
-        'uploadDocument',
-        {'file_path': filePath},
-      );
+      final result = await _method.invokeMethod('uploadDocument', {
+        'file_path': filePath,
+      });
       return jsonDecode(result as String) as Map<String, dynamic>;
     } catch (e) {
       return {'success': false, 'message': 'Upload failed: $e'};
@@ -224,10 +235,9 @@ class PlatformService {
   /// Delete a document by ID.
   Future<bool> deleteDocument(int docId) async {
     try {
-      final result = await _method.invokeMethod(
-        'deleteDocument',
-        {'doc_id': docId},
-      );
+      final result = await _method.invokeMethod('deleteDocument', {
+        'doc_id': docId,
+      });
       final json = jsonDecode(result as String) as Map<String, dynamic>;
       return json['success'] == true;
     } catch (e) {
@@ -253,7 +263,10 @@ class PlatformService {
   /// Start a RAG streaming query. Streams tokens, then returns sources via
   /// the MethodChannel result (JSON with answer + sources).
   /// Returns a record of (tokenStream, sourcesFuture).
-  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) ragStream(String query, {String responseStyle = 'concise'}) {
+  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) ragStream(
+    String query, {
+    String responseStyle = 'concise',
+  }) {
     final tokenController = StreamController<String>();
     final resultCompleter = Completer<Map<String, dynamic>>();
 
@@ -275,23 +288,26 @@ class PlatformService {
     );
 
     // Invoke ragStream — the result contains sources JSON
-    _method.invokeMethod('ragStream', {
-      'query': query,
-      'response_style': responseStyle,
-    }).then((result) {
-      try {
-        final json = jsonDecode(result as String) as Map<String, dynamic>;
-        resultCompleter.complete(json);
-      } catch (e) {
-        resultCompleter.complete({});
-      }
-    }).catchError((e) {
-      if (!tokenController.isClosed) {
-        tokenController.addError(e);
-        tokenController.close();
-      }
-      resultCompleter.complete({});
-    });
+    _method
+        .invokeMethod('ragStream', {
+          'query': query,
+          'response_style': responseStyle,
+        })
+        .then((result) {
+          try {
+            final json = jsonDecode(result as String) as Map<String, dynamic>;
+            resultCompleter.complete(json);
+          } catch (e) {
+            resultCompleter.complete({});
+          }
+        })
+        .catchError((e) {
+          if (!tokenController.isClosed) {
+            tokenController.addError(e);
+            tokenController.close();
+          }
+          resultCompleter.complete({});
+        });
 
     return (tokens: tokenController.stream, result: resultCompleter.future);
   }
@@ -321,7 +337,7 @@ class PlatformService {
   }
 
   // ---- Diagnostics ----
-  
+
   /// Get init logs for debugging.
   Future<String> getInitLogs() async {
     try {
@@ -349,4 +365,3 @@ class PlatformService {
     }
   }
 }
-

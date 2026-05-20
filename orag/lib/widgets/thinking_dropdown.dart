@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+
 import '../theme/app_theme.dart';
 
-/// Collapsible card showing the raw Qwen3 <think>…</think> reasoning block.
-/// Only rendered when [thinkingText] is non-empty.
+/// Collapsible card showing the raw model thinking block.
 class ThinkingDropdown extends StatefulWidget {
   final String thinkingText;
   final bool initiallyExpanded;
@@ -53,30 +53,32 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
   Widget build(BuildContext context) {
     if (widget.thinkingText.isEmpty) return const SizedBox.shrink();
 
+    final colors = context.colors;
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Container(
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color: colors.surface,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: const Color(0xFFFFB946).withValues(alpha: 0.22),
+            color: colors.warning.withValues(alpha: 0.24),
             width: 1,
           ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Header ──────────────────────────────────────────────────
             InkWell(
               onTap: _toggle,
               borderRadius: BorderRadius.circular(12),
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 9,
+                ),
                 child: Row(
                   children: [
-                    // Animated brain icon
                     AnimatedSwitcher(
                       duration: const Duration(milliseconds: 200),
                       child: Icon(
@@ -85,27 +87,22 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
                             : Icons.psychology_outlined,
                         key: ValueKey(_expanded),
                         size: 15,
-                        color: AppColors.warning.withValues(alpha: 0.85),
+                        color: colors.warning.withValues(alpha: 0.88),
                       ),
                     ),
                     const SizedBox(width: 6),
                     Text(
                       'Model Thinking',
                       style: TextStyle(
-                        color: AppColors.warning.withValues(alpha: 0.9),
+                        color: colors.warning.withValues(alpha: 0.92),
                         fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        letterSpacing: 0.1,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     const SizedBox(width: 6),
-                    // Token count hint
                     Text(
-                      '· ${_tokenCount(widget.thinkingText)} tokens',
-                      style: TextStyle(
-                        color: AppColors.textDim,
-                        fontSize: 10,
-                      ),
+                      '- ${_tokenCount(widget.thinkingText)} tokens',
+                      style: TextStyle(color: colors.textDim, fontSize: 10),
                     ),
                     const Spacer(),
                     AnimatedRotation(
@@ -114,15 +111,13 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
                       child: Icon(
                         Icons.keyboard_arrow_down_rounded,
                         size: 18,
-                        color: AppColors.textDim,
+                        color: colors.textDim,
                       ),
                     ),
                   ],
                 ),
               ),
             ),
-
-            // ── Expanded body ────────────────────────────────────────────
             AnimatedCrossFade(
               duration: const Duration(milliseconds: 220),
               crossFadeState: _expanded
@@ -141,15 +136,12 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
   }
 
   Widget _buildBody() {
+    final colors = context.colors;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Divider(
-          color: AppColors.divider,
-          height: 1,
-          indent: 12,
-          endIndent: 12,
-        ),
+        Divider(color: colors.divider, height: 1, indent: 12, endIndent: 12),
         ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 280),
           child: Stack(
@@ -160,8 +152,8 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
                   padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
                   child: Text(
                     widget.thinkingText,
-                    style: const TextStyle(
-                      color: Color(0xFFAAAAAA),
+                    style: TextStyle(
+                      color: colors.textSecondary,
                       fontSize: 11.5,
                       height: 1.55,
                       fontFamily: 'monospace',
@@ -170,7 +162,6 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
                   ),
                 ),
               ),
-              // Bottom fade to indicate more content below
               Positioned(
                 bottom: 0,
                 left: 0,
@@ -183,8 +174,8 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
                         colors: [
-                          AppColors.surface.withValues(alpha: 0.0),
-                          AppColors.surface.withValues(alpha: 0.85),
+                          colors.surface.withValues(alpha: 0.0),
+                          colors.surface.withValues(alpha: 0.85),
                         ],
                       ),
                     ),
@@ -198,7 +189,6 @@ class _ThinkingDropdownState extends State<ThinkingDropdown>
     );
   }
 
-  /// Rough token count: ~4 chars per token.
   String _tokenCount(String text) {
     final count = (text.length / 4).round();
     return count >= 1000 ? '${(count / 1000).toStringAsFixed(1)}k' : '$count';

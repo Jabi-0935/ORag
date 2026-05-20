@@ -11,11 +11,7 @@ class InitOverlay extends StatefulWidget {
   final InitStatus status;
   final VoidCallback? onRetry;
 
-  const InitOverlay({
-    super.key,
-    required this.status,
-    this.onRetry,
-  });
+  const InitOverlay({super.key, required this.status, this.onRetry});
 
   @override
   State<InitOverlay> createState() => _InitOverlayState();
@@ -47,8 +43,10 @@ class _InitOverlayState extends State<InitOverlay>
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+
     return Container(
-      color: AppColors.background,
+      color: colors.background,
       child: SafeArea(
         child: Column(
           children: [
@@ -65,8 +63,8 @@ class _InitOverlayState extends State<InitOverlay>
               style: GoogleFonts.inter(
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
-                color: Colors.white,
-                letterSpacing: 3,
+                color: colors.textPrimary,
+                letterSpacing: 2,
               ),
             ),
 
@@ -81,7 +79,7 @@ class _InitOverlayState extends State<InitOverlay>
                   _statusText,
                   key: ValueKey(_statusText),
                   style: GoogleFonts.inter(
-                    color: AppColors.textPrimary,
+                    color: colors.textPrimary,
                     fontSize: 15,
                     fontWeight: FontWeight.w500,
                   ),
@@ -100,10 +98,7 @@ class _InitOverlayState extends State<InitOverlay>
                 child: Text(
                   _hintText,
                   key: ValueKey(_hintText),
-                  style: GoogleFonts.inter(
-                    color: AppColors.textDim,
-                    fontSize: 12,
-                  ),
+                  style: GoogleFonts.inter(color: colors.textDim, fontSize: 12),
                   textAlign: TextAlign.center,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
@@ -133,12 +128,16 @@ class _InitOverlayState extends State<InitOverlay>
                       icon: const Icon(Icons.refresh_rounded, size: 16),
                       label: const Text('Retry'),
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.primary,
+                        foregroundColor: Theme.of(context).colorScheme.primary,
                         side: BorderSide(
-                          color: AppColors.primary.withValues(alpha: 0.3),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.primary.withValues(alpha: 0.3),
                         ),
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 24, vertical: 12),
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10),
                         ),
@@ -157,15 +156,19 @@ class _InitOverlayState extends State<InitOverlay>
   }
 
   Widget _buildLogoSection() {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
     final isError = widget.status.state == InitState.error;
     final isReady = widget.status.state == InitState.ready;
 
     if (isError) {
-      return _buildStatusIcon(Icons.error_outline_rounded, AppColors.error);
+      return _buildStatusIcon(Icons.error_outline_rounded, colors.error);
     }
     if (isReady) {
       return _buildStatusIcon(
-          Icons.check_circle_outline_rounded, AppColors.success);
+        Icons.check_circle_outline_rounded,
+        colors.success,
+      );
     }
 
     // Logo + rotating arc ring
@@ -181,10 +184,7 @@ class _InitOverlayState extends State<InitOverlay>
               turns: _spinController,
               child: CustomPaint(
                 size: const Size(110, 110),
-                painter: _ArcPainter(
-                  color: AppColors.primary,
-                  strokeWidth: 1.5,
-                ),
+                painter: _ArcPainter(color: scheme.primary, strokeWidth: 1.5),
               ),
             ),
           // Logo
@@ -202,10 +202,8 @@ class _InitOverlayState extends State<InitOverlay>
               width: 76,
               height: 76,
               fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => const SizedBox(
-                width: 76,
-                height: 76,
-              ),
+              errorBuilder: (context, error, stackTrace) =>
+                  const SizedBox(width: 76, height: 76),
             ),
           ),
         ],
@@ -225,9 +223,9 @@ class _InitOverlayState extends State<InitOverlay>
     );
   }
 
-
-
   Widget _buildProgressBar() {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
     final progress = widget.status.progress;
     return Column(
       children: [
@@ -237,9 +235,8 @@ class _InitOverlayState extends State<InitOverlay>
             height: 6,
             child: LinearProgressIndicator(
               value: progress > 0.01 ? progress : null,
-              backgroundColor: Colors.white.withValues(alpha: 0.06),
-              valueColor:
-                  const AlwaysStoppedAnimation<Color>(AppColors.primary),
+              backgroundColor: colors.surfaceLight.withValues(alpha: 0.48),
+              valueColor: AlwaysStoppedAnimation<Color>(scheme.primary),
             ),
           ),
         ),
@@ -248,7 +245,7 @@ class _InitOverlayState extends State<InitOverlay>
           Text(
             '${(progress * 100).toInt()}%',
             style: GoogleFonts.inter(
-              color: AppColors.textDim,
+              color: colors.textDim,
               fontSize: 11,
               fontWeight: FontWeight.w500,
             ),
@@ -280,7 +277,9 @@ class _InitOverlayState extends State<InitOverlay>
         return 'Ready to chat!';
       case InitState.error:
         final errorMsg = _sanitizeMsg(widget.status.message);
-        return errorMsg.isNotEmpty ? errorMsg : 'Could not initialize the AI engine.';
+        return errorMsg.isNotEmpty
+            ? errorMsg
+            : 'Could not initialize the AI engine.';
     }
   }
 

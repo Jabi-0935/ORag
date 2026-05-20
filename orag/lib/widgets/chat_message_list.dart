@@ -14,6 +14,7 @@ class ChatMessageList extends StatelessWidget {
   final bool ragMode;
   final ScrollController scrollController;
   final ValueChanged<String> onPromptTapped;
+  final VoidCallback onOpenDocuments;
 
   const ChatMessageList({
     super.key,
@@ -22,6 +23,7 @@ class ChatMessageList extends StatelessWidget {
     required this.ragMode,
     required this.scrollController,
     required this.onPromptTapped,
+    required this.onOpenDocuments,
   });
 
   @override
@@ -30,6 +32,7 @@ class ChatMessageList extends StatelessWidget {
       return ChatEmptyState(
         ragMode: ragMode,
         onPromptTapped: onPromptTapped,
+        onOpenDocuments: onOpenDocuments,
       );
     }
 
@@ -42,7 +45,7 @@ class ChatMessageList extends StatelessWidget {
 
         // System messages render as centered info cards
         if (msg.role == MessageRole.system) {
-          return _buildSystemMessage(msg);
+          return _buildSystemMessage(context, msg);
         }
 
         // If this is the AI message and it's streaming but empty, show typing indicator
@@ -67,9 +70,7 @@ class ChatMessageList extends StatelessWidget {
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  ChatBubble(message: msg),
-                ],
+                children: [ChatBubble(message: msg)],
               ),
             ),
           ],
@@ -78,24 +79,22 @@ class ChatMessageList extends StatelessWidget {
     );
   }
 
-  Widget _buildSystemMessage(ChatMessage msg) {
+  Widget _buildSystemMessage(BuildContext context, ChatMessage msg) {
+    final colors = context.colors;
     return Center(
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
-          color: AppColors.surfaceLight.withValues(alpha: 0.6),
+          color: colors.surfaceLight.withValues(alpha: 0.75),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: AppColors.divider,
-            width: 1,
-          ),
+          border: Border.all(color: colors.divider, width: 1),
         ),
         child: Text(
           msg.text,
           textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
+          style: TextStyle(
+            color: colors.textSecondary,
             fontSize: 13,
             height: 1.4,
           ),

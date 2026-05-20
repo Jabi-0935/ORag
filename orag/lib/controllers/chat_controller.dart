@@ -11,8 +11,8 @@ import '../services/platform_service.dart';
 
 // Response style options (like ChatGPT's Instant/Thinking)
 enum ResponseStyle {
-  concise,   // Fast, direct answers
-  detailed,  // Thorough, comprehensive answers
+  concise, // Fast, direct answers
+  detailed, // Thorough, comprehensive answers
 }
 
 class ChatState {
@@ -63,7 +63,9 @@ class ChatState {
       errorBanner: clearError ? null : (errorBanner ?? this.errorBanner),
       isUploading: isUploading ?? this.isUploading,
       uploadStatus: uploadStatus ?? this.uploadStatus,
-      activeDocumentName: clearActiveDocument ? null : (activeDocumentName ?? this.activeDocumentName),
+      activeDocumentName: clearActiveDocument
+          ? null
+          : (activeDocumentName ?? this.activeDocumentName),
       responseStyle: responseStyle ?? this.responseStyle,
     );
   }
@@ -116,32 +118,34 @@ class ChatController extends Notifier<ChatState> {
     try {
       final modelPath = (await getExternalStorageDirectory())?.path;
 
-      _platform.initPython(modelPath ?? '').listen(
-        (status) {
-          state = state.copyWith(initStatus: status);
-          if (status.isReady) {
-            state = state.copyWith(initDone: true);
-            _isInitializing = false;
-            _initTimeoutTimer?.cancel();
-            // Restore persisted messages after init
-            _loadPersistedMessages();
-          }
-        },
-        onDone: () {
-          _isInitializing = false;
-        },
-        onError: (e) {
-          _isInitializing = false;
-          state = state.copyWith(
-            initStatus: InitStatus(
-              state: InitState.error,
-              progress: 1.0,
-              message: 'Initialization failed: $e',
-            ),
+      _platform
+          .initPython(modelPath ?? '')
+          .listen(
+            (status) {
+              state = state.copyWith(initStatus: status);
+              if (status.isReady) {
+                state = state.copyWith(initDone: true);
+                _isInitializing = false;
+                _initTimeoutTimer?.cancel();
+                // Restore persisted messages after init
+                _loadPersistedMessages();
+              }
+            },
+            onDone: () {
+              _isInitializing = false;
+            },
+            onError: (e) {
+              _isInitializing = false;
+              state = state.copyWith(
+                initStatus: InitStatus(
+                  state: InitState.error,
+                  progress: 1.0,
+                  message: 'Initialization failed: $e',
+                ),
+              );
+              _initTimeoutTimer?.cancel();
+            },
           );
-          _initTimeoutTimer?.cancel();
-        },
-      );
 
       // Start a timeout timer — replaces the old hardcoded 120-iteration loop
       _initTimeoutTimer?.cancel();
@@ -255,7 +259,10 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
-    final chat = _platform.chatStream(text, responseStyle: state.responseStyle.name);
+    final chat = _platform.chatStream(
+      text,
+      responseStyle: state.responseStyle.name,
+    );
 
     _chatSub?.cancel();
     _chatSub = chat.tokens.listen(
@@ -319,7 +326,10 @@ class ChatController extends Notifier<ChatState> {
       clearError: true,
     );
 
-    final rag = _platform.ragStream(text, responseStyle: state.responseStyle.name);
+    final rag = _platform.ragStream(
+      text,
+      responseStyle: state.responseStyle.name,
+    );
 
     _chatSub?.cancel();
     _chatSub = rag.tokens.listen(
@@ -342,9 +352,10 @@ class ChatController extends Notifier<ChatState> {
           final resultData = await rag.result;
           final srcList =
               (resultData['sources'] as List?)?.cast<Map<String, dynamic>>() ??
-                  [];
-          aiMsg.sources =
-              srcList.map((m) => SourceAttribution.fromJson(m)).toList();
+              [];
+          aiMsg.sources = srcList
+              .map((m) => SourceAttribution.fromJson(m))
+              .toList();
 
           // Parse thinking block
           final thinking = resultData['thinking'] as String? ?? '';
@@ -354,17 +365,18 @@ class ChatController extends Notifier<ChatState> {
 
           // Parse parent chunks used in RAG context
           final chunkList =
-              (resultData['parent_chunks'] as List?)?.cast<Map<String, dynamic>>() ??
-                  [];
-          aiMsg.parentChunks =
-              chunkList.map((m) => ParentChunk.fromJson(m)).toList();
+              (resultData['parent_chunks'] as List?)
+                  ?.cast<Map<String, dynamic>>() ??
+              [];
+          aiMsg.parentChunks = chunkList
+              .map((m) => ParentChunk.fromJson(m))
+              .toList();
 
           // Grab the text answer if no tokens were streamed
           if (aiMsg.isEmpty) {
             final answer = resultData['answer'] as String?;
             if (answer != null && answer.isNotEmpty) {
-              aiMsg.text =
-                  answer.startsWith('ERROR:') ? '⚠️ $answer' : answer;
+              aiMsg.text = answer.startsWith('ERROR:') ? '⚠️ $answer' : answer;
             }
           }
         } catch (e) {
@@ -409,25 +421,27 @@ class ChatController extends Notifier<ChatState> {
     if (result == null || result.files.isEmpty) return;
 
     final fileNames = result.files.map((f) => f.name).join(', ');
-    final tempMsg = ChatMessage(role: MessageRole.system, text: 'Uploading $fileNames…');
+    final tempMsg = ChatMessage(
+      role: MessageRole.system,
+      text: 'Uploading $fileNames…',
+    );
 
     state = state.copyWith(
-      isUploading: true, 
+      isUploading: true,
       uploadStatus: 'Reading files…',
       messages: [...state.messages, tempMsg],
     );
 
     final stopwatch = Stopwatch()..start();
-    final statusTimer = Stream.periodic(
-      const Duration(seconds: 1),
-      (i) => i,
-    ).listen((_) {
-      tempMsg.text = 'Processing $fileNames… ${stopwatch.elapsed.inSeconds}s';
-      state = state.copyWith(
-        uploadStatus: 'Processing… ${stopwatch.elapsed.inSeconds}s',
-        messages: List.of(state.messages),
-      );
-    });
+    final statusTimer = Stream.periodic(const Duration(seconds: 1), (i) => i)
+        .listen((_) {
+          tempMsg.text =
+              'Processing $fileNames… ${stopwatch.elapsed.inSeconds}s';
+          state = state.copyWith(
+            uploadStatus: 'Processing… ${stopwatch.elapsed.inSeconds}s',
+            messages: List.of(state.messages),
+          );
+        });
 
     bool allSuccess = true;
     String lastMessage = '';
@@ -437,7 +451,8 @@ class ChatController extends Notifier<ChatState> {
       final response = await _platform.uploadDocument(file.path!);
       if (response['success'] != true) {
         allSuccess = false;
-        lastMessage = response['message'] as String? ?? 'Failed to upload ${file.name}';
+        lastMessage =
+            response['message'] as String? ?? 'Failed to upload ${file.name}';
         break; // Stop on first error
       }
     }
@@ -457,7 +472,9 @@ class ChatController extends Notifier<ChatState> {
 
     // Show success notification as a system message
     if (allSuccess) {
-      final docName = result.files.length == 1 ? result.files.first.name : '${result.files.length} documents';
+      final docName = result.files.length == 1
+          ? result.files.first.name
+          : '${result.files.length} documents';
       _addSystemMessage('$docName uploaded to knowledge base.');
     }
   }
@@ -510,5 +527,6 @@ class ChatController extends Notifier<ChatState> {
 
 // ---- Provider ----
 
-final chatControllerProvider =
-    NotifierProvider<ChatController, ChatState>(ChatController.new);
+final chatControllerProvider = NotifierProvider<ChatController, ChatState>(
+  ChatController.new,
+);

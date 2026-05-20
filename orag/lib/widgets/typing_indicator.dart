@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../theme/app_theme.dart';
 
 /// Animated three-dot typing indicator (like iMessage).
 class TypingIndicator extends StatefulWidget {
@@ -25,9 +24,10 @@ class _TypingIndicatorState extends State<TypingIndicator>
     });
 
     _animations = _controllers.map((c) {
-      return Tween<double>(begin: 0, end: -8).animate(
-        CurvedAnimation(parent: c, curve: Curves.easeInOut),
-      );
+      return Tween<double>(
+        begin: 0,
+        end: -8,
+      ).animate(CurvedAnimation(parent: c, curve: Curves.easeInOut));
     }).toList();
 
     // Stagger the animations
@@ -50,6 +50,8 @@ class _TypingIndicatorState extends State<TypingIndicator>
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 48, top: 4, bottom: 4),
       child: Row(
@@ -63,16 +65,13 @@ class _TypingIndicatorState extends State<TypingIndicator>
               color: Colors.transparent,
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
-                color: AppColors.secondary.withValues(alpha: 0.3),
+                color: scheme.secondary.withValues(alpha: 0.3),
                 width: 1,
               ),
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(11),
-              child: Image.asset(
-                'assets/logo.png',
-                fit: BoxFit.cover,
-              ),
+              child: Image.asset('assets/logo.png', fit: BoxFit.cover),
             ),
           ),
           const SizedBox(width: 10),
@@ -95,7 +94,7 @@ class _TypingIndicatorState extends State<TypingIndicator>
                     height: 8,
                     margin: EdgeInsets.only(right: i < 2 ? 5 : 0),
                     decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.7),
+                      color: scheme.primary.withValues(alpha: 0.7),
                       shape: BoxShape.circle,
                     ),
                   ),

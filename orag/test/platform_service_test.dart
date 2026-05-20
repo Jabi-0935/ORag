@@ -16,19 +16,25 @@ void main() {
     });
 
     test('isReady returns true for ready state', () {
-      const s = InitStatus(state: InitState.ready, progress: 1.0, message: 'Done');
+      const s = InitStatus(
+        state: InitState.ready,
+        progress: 1.0,
+        message: 'Done',
+      );
       expect(s.isReady, true);
       expect(s.isError, false);
     });
 
     test('isError returns true for error state', () {
-      const s = InitStatus(state: InitState.error, progress: 1.0, message: 'Failed');
+      const s = InitStatus(
+        state: InitState.error,
+        progress: 1.0,
+        message: 'Failed',
+      );
       expect(s.isError, true);
       expect(s.isReady, false);
     });
   });
-
-
 
   // ---- SourceAttribution ----
 
@@ -107,8 +113,14 @@ void main() {
       final before = DateTime.now();
       final msg = ChatMessage(role: MessageRole.user, text: 'test');
       final after = DateTime.now();
-      expect(msg.timestamp.isAfter(before.subtract(const Duration(seconds: 1))), true);
-      expect(msg.timestamp.isBefore(after.add(const Duration(seconds: 1))), true);
+      expect(
+        msg.timestamp.isAfter(before.subtract(const Duration(seconds: 1))),
+        true,
+      );
+      expect(
+        msg.timestamp.isBefore(after.add(const Duration(seconds: 1))),
+        true,
+      );
     });
 
     test('streaming flag can be toggled', () {

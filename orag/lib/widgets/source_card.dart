@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../models/chat_message.dart';
 import '../theme/app_theme.dart';
 
@@ -24,41 +25,45 @@ class _SourceCardState extends State<SourceCard> {
   Widget build(BuildContext context) {
     if (widget.sources.isEmpty) return const SizedBox.shrink();
 
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Container(
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color: colors.surface,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: AppColors.secondary.withValues(alpha: 0.2),
+            color: scheme.secondary.withValues(alpha: 0.2),
             width: 1,
           ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header (tap to expand)
             InkWell(
               onTap: () => setState(() => _expanded = !_expanded),
               borderRadius: BorderRadius.circular(12),
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 child: Row(
                   children: [
                     Icon(
                       Icons.source_rounded,
                       size: 14,
-                      color: AppColors.secondary.withValues(alpha: 0.7),
+                      color: scheme.secondary.withValues(alpha: 0.72),
                     ),
                     const SizedBox(width: 6),
                     Text(
                       '${widget.sources.length} source${widget.sources.length > 1 ? 's' : ''} used',
                       style: TextStyle(
-                        color: AppColors.secondary.withValues(alpha: 0.8),
+                        color: scheme.secondary.withValues(alpha: 0.86),
                         fontSize: 12,
-                        fontWeight: FontWeight.w500,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     const Spacer(),
@@ -68,15 +73,13 @@ class _SourceCardState extends State<SourceCard> {
                       child: Icon(
                         Icons.keyboard_arrow_down_rounded,
                         size: 18,
-                        color: AppColors.textDim,
+                        color: colors.textDim,
                       ),
                     ),
                   ],
                 ),
               ),
             ),
-
-            // Expanded content
             AnimatedCrossFade(
               firstChild: const SizedBox.shrink(),
               secondChild: _buildSources(),
@@ -92,79 +95,86 @@ class _SourceCardState extends State<SourceCard> {
   }
 
   Widget _buildSources() {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Divider(color: AppColors.divider, height: 1),
+          Divider(color: colors.divider, height: 1),
           const SizedBox(height: 8),
-          ...widget.sources.map((src) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          src.docName.endsWith('.pdf')
-                              ? Icons.picture_as_pdf_rounded
-                              : Icons.text_snippet_rounded,
-                          size: 13,
-                          color: AppColors.primary,
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            src.docName,
-                            style: const TextStyle(
-                              color: AppColors.primary,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: _relevanceColor(src.score).withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            _relevanceLabel(src.score),
-                            style: TextStyle(
-                              color: _relevanceColor(src.score),
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      src.chunkText,
-                      style: const TextStyle(
-                        color: AppColors.textDim,
-                        fontSize: 11,
-                        height: 1.4,
+          ...widget.sources.map((src) {
+            final relevance = _relevanceColor(context, src.score);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        src.docName.endsWith('.pdf')
+                            ? Icons.picture_as_pdf_rounded
+                            : Icons.text_snippet_rounded,
+                        size: 13,
+                        color: scheme.primary,
                       ),
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          src.docName,
+                          style: TextStyle(
+                            color: scheme.primary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: relevance.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          _relevanceLabel(src.score),
+                          style: TextStyle(
+                            color: relevance,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    src.chunkText,
+                    style: TextStyle(
+                      color: colors.textDim,
+                      fontSize: 11,
+                      height: 1.4,
                     ),
-                  ],
-                ),
-              )),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            );
+          }),
         ],
       ),
     );
   }
 }
 
-/// Relevance label from wRRF score (which are typically 0.001-0.05).
 String _relevanceLabel(double score) {
   if (score >= 0.018) return 'High';
   if (score >= 0.010) return 'Medium';
@@ -172,9 +182,10 @@ String _relevanceLabel(double score) {
   return 'Weak';
 }
 
-Color _relevanceColor(double score) {
-  if (score >= 0.018) return AppColors.success;
-  if (score >= 0.010) return AppColors.primary;
-  if (score >= 0.004) return AppColors.warning;
-  return AppColors.textDim;
+Color _relevanceColor(BuildContext context, double score) {
+  final colors = context.colors;
+  if (score >= 0.018) return colors.success;
+  if (score >= 0.010) return Theme.of(context).colorScheme.primary;
+  if (score >= 0.004) return colors.warning;
+  return colors.textDim;
 }

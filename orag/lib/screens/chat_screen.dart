@@ -73,10 +73,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => SettingsScreen(
-          platform: ctrl.platform,
-          onClearChat: _clearMemory,
-        ),
+        builder: (_) =>
+            SettingsScreen(platform: ctrl.platform, onClearChat: _clearMemory),
       ),
     );
   }
@@ -105,6 +103,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatControllerProvider);
+    final colors = context.colors;
 
     // Auto-scroll when streaming starts or message count changes
     ref.listen<ChatState>(chatControllerProvider, (prev, next) {
@@ -122,7 +121,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         showTopSnackBar(
           context,
           message: next.errorBanner!,
-          backgroundColor: AppColors.error,
+          backgroundColor: colors.error,
           duration: const Duration(seconds: 6),
         );
       }
@@ -130,7 +129,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     return Scaffold(
       key: _scaffoldKey,
-      backgroundColor: AppColors.background,
+      backgroundColor: colors.background,
       endDrawer: chatState.initDone
           ? DocumentDrawer(
               platform: ref.read(chatControllerProvider.notifier).platform,
@@ -147,9 +146,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   onOpenDocuments: () =>
                       _scaffoldKey.currentState?.openEndDrawer(),
                   onOpenSettings: _openSettings,
-                  onToggleRagMode: () => ref
-                      .read(chatControllerProvider.notifier)
-                      .toggleRagMode(),
+                  onToggleRagMode: () =>
+                      ref.read(chatControllerProvider.notifier).toggleRagMode(),
                   onResponseStyleChanged: (style) => ref
                       .read(chatControllerProvider.notifier)
                       .setResponseStyle(style),
@@ -164,6 +162,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ragMode: chatState.ragMode,
                     scrollController: _scrollController,
                     onPromptTapped: _onPromptTapped,
+                    onOpenDocuments: () =>
+                        _scaffoldKey.currentState?.openEndDrawer(),
                   ),
                 ),
                 ChatInputBar(

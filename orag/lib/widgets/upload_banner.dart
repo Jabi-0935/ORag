@@ -10,33 +10,34 @@ class UploadBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: AppColors.primary.withValues(alpha: 0.08),
-        border: const Border(
-          bottom: BorderSide(color: AppColors.divider, width: 1),
-        ),
+        color: scheme.primary.withValues(alpha: 0.08),
+        border: Border(bottom: BorderSide(color: colors.divider, width: 1)),
       ),
       child: Row(
         children: [
-          const SizedBox(
+          SizedBox(
             width: 14,
             height: 14,
             child: CircularProgressIndicator(
               strokeWidth: 2,
-              color: AppColors.primary,
+              color: scheme.primary,
             ),
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              uploadStatus.isNotEmpty ? uploadStatus : 'Processing document…',
-              style: const TextStyle(
-                color: AppColors.primary,
+              uploadStatus.isNotEmpty ? uploadStatus : 'Processing document...',
+              style: TextStyle(
+                color: scheme.primary,
                 fontSize: 13,
-                fontWeight: FontWeight.w500,
+                fontWeight: FontWeight.w600,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,

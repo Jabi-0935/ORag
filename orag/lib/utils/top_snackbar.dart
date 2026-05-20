@@ -16,7 +16,7 @@ void showTopSnackBar(
   entry = OverlayEntry(
     builder: (context) => _TopSnackBarWidget(
       message: message,
-      backgroundColor: backgroundColor ?? AppColors.surfaceLight,
+      backgroundColor: backgroundColor ?? context.colors.surfaceLight,
       duration: duration,
       action: action,
       onDismiss: () => entry.remove(),
@@ -62,8 +62,10 @@ class _TopSnackBarWidgetState extends State<_TopSnackBarWidget>
       begin: const Offset(0, -1),
       end: Offset.zero,
     ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0)
-        .animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
+    _fadeAnimation = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
 
     _controller.forward();
 
@@ -85,6 +87,7 @@ class _TopSnackBarWidgetState extends State<_TopSnackBarWidget>
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final topPadding = MediaQuery.of(context).padding.top;
 
     return Positioned(
@@ -100,17 +103,17 @@ class _TopSnackBarWidgetState extends State<_TopSnackBarWidget>
             child: GestureDetector(
               onTap: _dismiss,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
                   color: widget.backgroundColor,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: AppColors.divider,
-                    width: 1,
-                  ),
+                  border: Border.all(color: colors.divider, width: 1),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.3),
+                      color: colors.shadow.withValues(alpha: 0.24),
                       blurRadius: 12,
                       offset: const Offset(0, 4),
                     ),
@@ -121,8 +124,8 @@ class _TopSnackBarWidgetState extends State<_TopSnackBarWidget>
                     Expanded(
                       child: Text(
                         widget.message,
-                        style: const TextStyle(
-                          color: AppColors.textPrimary,
+                        style: TextStyle(
+                          color: colors.textPrimary,
                           fontSize: 14,
                           fontWeight: FontWeight.w500,
                         ),
@@ -138,7 +141,9 @@ class _TopSnackBarWidgetState extends State<_TopSnackBarWidget>
                         child: Text(
                           widget.action!.label,
                           style: TextStyle(
-                            color: widget.action!.textColor ?? AppColors.primary,
+                            color:
+                                widget.action!.textColor ??
+                                Theme.of(context).colorScheme.primary,
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),

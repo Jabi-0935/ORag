@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orag/models/chat_message.dart';
+import 'package:orag/theme/app_theme.dart';
 import 'package:orag/widgets/chat_bubble.dart';
 
 /// Wraps a widget in a MaterialApp for testing.
 Widget _testApp(Widget child) {
   return MaterialApp(
-    home: Scaffold(
-      body: SingleChildScrollView(child: child),
-    ),
+    theme: AppTheme.light,
+    darkTheme: AppTheme.dark,
+    home: Scaffold(body: SingleChildScrollView(child: child)),
   );
 }
 
@@ -46,7 +47,9 @@ void main() {
       expect(find.byType(Image), findsOneWidget);
     });
 
-    testWidgets('shows TTS button for non-streaming AI messages', (tester) async {
+    testWidgets('shows TTS button for non-streaming AI messages', (
+      tester,
+    ) async {
       final msg = ChatMessage(
         role: MessageRole.assistant,
         text: 'This is a response',
@@ -55,7 +58,7 @@ void main() {
       await tester.pumpWidget(_testApp(ChatBubble(message: msg)));
       await tester.pumpAndSettle();
 
-      expect(find.text('Listen'), findsOneWidget);
+      expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
     });
 
     testWidgets('hides TTS button during streaming', (tester) async {
@@ -67,7 +70,7 @@ void main() {
       await tester.pumpWidget(_testApp(ChatBubble(message: msg)));
       await tester.pumpAndSettle();
 
-      expect(find.text('Listen'), findsNothing);
+      expect(find.byIcon(Icons.volume_up_rounded), findsNothing);
     });
 
     testWidgets('hides TTS button for user messages', (tester) async {
@@ -75,8 +78,7 @@ void main() {
       await tester.pumpWidget(_testApp(ChatBubble(message: msg)));
       await tester.pumpAndSettle();
 
-      expect(find.text('Listen'), findsNothing);
+      expect(find.byIcon(Icons.volume_up_rounded), findsNothing);
     });
-
   });
 }

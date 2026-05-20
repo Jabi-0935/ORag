@@ -55,6 +55,8 @@ class _ChatAppBarState extends State<ChatAppBar>
   @override
   Widget build(BuildContext context) {
     final cs = widget.chatState;
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
 
     return ClipRRect(
       child: BackdropFilter(
@@ -69,9 +71,7 @@ class _ChatAppBarState extends State<ChatAppBar>
                 right: 10,
                 bottom: 10,
               ),
-              decoration: const BoxDecoration(
-                color: AppColors.glassBackground,
-              ),
+              decoration: BoxDecoration(color: colors.glassBackground),
               child: Row(
                 children: [
                   // Logo
@@ -109,10 +109,10 @@ class _ChatAppBarState extends State<ChatAppBar>
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [
-                    AppColors.primary.withValues(alpha: 0.0),
-                    AppColors.primary.withValues(alpha: 0.4),
-                    AppColors.secondary.withValues(alpha: 0.4),
-                    AppColors.secondary.withValues(alpha: 0.0),
+                    scheme.primary.withValues(alpha: 0.0),
+                    scheme.primary.withValues(alpha: 0.34),
+                    scheme.secondary.withValues(alpha: 0.28),
+                    scheme.secondary.withValues(alpha: 0.0),
                   ],
                   stops: const [0.0, 0.35, 0.65, 1.0],
                 ),
@@ -131,16 +131,15 @@ class _ChatAppBarState extends State<ChatAppBar>
       width: 34,
       height: 34,
       alignment: Alignment.center,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(9),
-      ),
+      decoration: BoxDecoration(borderRadius: BorderRadius.circular(9)),
       clipBehavior: Clip.antiAlias,
       child: Image.asset(
         'assets/logo.png',
         width: 34,
         height: 34,
         fit: BoxFit.contain,
-        errorBuilder: (_, __, ___) => const SizedBox(width: 34, height: 34),
+        errorBuilder: (context, error, stackTrace) =>
+            const SizedBox(width: 34, height: 34),
       ),
     );
   }
@@ -148,10 +147,12 @@ class _ChatAppBarState extends State<ChatAppBar>
   // ── Title: "O-RAG · Concise ▼" — tappable dropdown ───────────────────
 
   Widget _buildTitle(ChatState cs) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
     final style = cs.responseStyle;
     final isConcise = style == ResponseStyle.concise;
     final styleName = isConcise ? 'Concise' : 'Detailed';
-    final styleColor = isConcise ? AppColors.warning : AppColors.secondary;
+    final styleColor = isConcise ? colors.warning : scheme.secondary;
 
     return PopupMenuButton<ResponseStyle>(
       onSelected: (selected) {
@@ -160,7 +161,7 @@ class _ChatAppBarState extends State<ChatAppBar>
       },
       offset: const Offset(-15, 44),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      color: AppColors.surface,
+      color: colors.surface,
       elevation: 8,
       itemBuilder: (_) => [
         _styleMenuItem(
@@ -182,13 +183,12 @@ class _ChatAppBarState extends State<ChatAppBar>
         mainAxisSize: MainAxisSize.min,
         children: [
           // "O-RAG"
-          const Text(
+          Text(
             'O-RAG',
             style: TextStyle(
-              color: AppColors.textPrimary,
+              color: colors.textPrimary,
               fontSize: 17,
               fontWeight: FontWeight.w700,
-              letterSpacing: 0.3,
             ),
           ),
           // Dot separator
@@ -197,7 +197,7 @@ class _ChatAppBarState extends State<ChatAppBar>
             child: Text(
               '·',
               style: TextStyle(
-                color: AppColors.textDim.withValues(alpha: 0.5),
+                color: colors.textDim.withValues(alpha: 0.5),
                 fontSize: 17,
                 fontWeight: FontWeight.w800,
               ),
@@ -234,7 +234,7 @@ class _ChatAppBarState extends State<ChatAppBar>
           Icon(
             Icons.keyboard_arrow_down_rounded,
             size: 18,
-            color: AppColors.textDim.withValues(alpha: 0.45),
+            color: colors.textDim.withValues(alpha: 0.45),
           ),
         ],
       ),
@@ -248,6 +248,8 @@ class _ChatAppBarState extends State<ChatAppBar>
     String subtitle,
     bool isSelected,
   ) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
     return PopupMenuItem<ResponseStyle>(
       value: value,
       child: Row(
@@ -256,14 +258,15 @@ class _ChatAppBarState extends State<ChatAppBar>
             width: 30,
             height: 30,
             decoration: BoxDecoration(
-              color: (isSelected ? AppColors.primary : AppColors.textDim)
-                  .withValues(alpha: 0.1),
+              color: (isSelected ? scheme.primary : colors.textDim).withValues(
+                alpha: 0.1,
+              ),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(
               icon,
               size: 16,
-              color: isSelected ? AppColors.primary : AppColors.textDim,
+              color: isSelected ? scheme.primary : colors.textDim,
             ),
           ),
           const SizedBox(width: 10),
@@ -275,23 +278,20 @@ class _ChatAppBarState extends State<ChatAppBar>
                 Text(
                   label,
                   style: TextStyle(
-                    color: AppColors.textPrimary,
+                    color: colors.textPrimary,
                     fontSize: 13,
                     fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
                   ),
                 ),
                 Text(
                   subtitle,
-                  style: const TextStyle(
-                    color: AppColors.textDim,
-                    fontSize: 11,
-                  ),
+                  style: TextStyle(color: colors.textDim, fontSize: 11),
                 ),
               ],
             ),
           ),
           if (isSelected)
-            const Icon(Icons.check_rounded, size: 18, color: AppColors.primary),
+            Icon(Icons.check_rounded, size: 18, color: scheme.primary),
         ],
       ),
     );
@@ -304,6 +304,8 @@ class _ChatAppBarState extends State<ChatAppBar>
     required String tooltip,
     required VoidCallback onPressed,
   }) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
     return Tooltip(
       message: tooltip,
       child: Material(
@@ -311,16 +313,16 @@ class _ChatAppBarState extends State<ChatAppBar>
         child: InkWell(
           onTap: onPressed,
           borderRadius: BorderRadius.circular(10),
-          splashColor: AppColors.glowPrimary,
-          highlightColor: AppColors.primary.withValues(alpha: 0.08),
+          splashColor: colors.glowPrimary,
+          highlightColor: scheme.primary.withValues(alpha: 0.08),
           child: Container(
             width: 34,
             height: 34,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10),
-              color: AppColors.surfaceLight.withValues(alpha: 0.35),
+              color: colors.surfaceLight.withValues(alpha: 0.45),
             ),
-            child: Icon(icon, size: 18, color: AppColors.textSecondary),
+            child: Icon(icon, size: 18, color: colors.textSecondary),
           ),
         ),
       ),
@@ -330,6 +332,8 @@ class _ChatAppBarState extends State<ChatAppBar>
   // ── Mode toggle: Chat / Doc segmented pill ───────────────────────────
 
   Widget _buildModeToggle(ChatState cs) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
     final isRag = cs.ragMode;
 
     if (_prevRagMode != null && _prevRagMode != isRag) {
@@ -355,16 +359,17 @@ class _ChatAppBarState extends State<ChatAppBar>
           curve: Curves.easeInOut,
           padding: const EdgeInsets.all(3),
           decoration: BoxDecoration(
-            color: AppColors.surfaceLight.withValues(alpha: 0.45),
+            color: colors.surfaceLight.withValues(alpha: 0.56),
             borderRadius: BorderRadius.circular(11),
             border: Border.all(
-              color: AppColors.divider.withValues(alpha: 0.45),
+              color: colors.divider.withValues(alpha: 0.72),
               width: 1,
             ),
             boxShadow: [
               BoxShadow(
-                color: (isRag ? AppColors.secondary : AppColors.primary)
-                    .withValues(alpha: 0.08),
+                color: (isRag ? scheme.secondary : scheme.primary).withValues(
+                  alpha: 0.08,
+                ),
                 blurRadius: 10,
               ),
             ],
@@ -376,14 +381,14 @@ class _ChatAppBarState extends State<ChatAppBar>
                 icon: Icons.smart_toy_outlined,
                 label: 'Chat',
                 isActive: !isRag,
-                color: AppColors.primary,
+                color: scheme.primary,
               ),
               const SizedBox(width: 2),
               _segment(
                 icon: Icons.description_outlined,
                 label: ragLabel,
                 isActive: isRag,
-                color: AppColors.secondary,
+                color: scheme.secondary,
               ),
             ],
           ),
@@ -398,6 +403,7 @@ class _ChatAppBarState extends State<ChatAppBar>
     required bool isActive,
     required Color color,
   }) {
+    final colors = context.colors;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       curve: Curves.easeInOut,
@@ -406,27 +412,18 @@ class _ChatAppBarState extends State<ChatAppBar>
         color: isActive ? color.withValues(alpha: 0.15) : Colors.transparent,
         borderRadius: BorderRadius.circular(8),
         boxShadow: isActive
-            ? [
-                BoxShadow(
-                  color: color.withValues(alpha: 0.2),
-                  blurRadius: 6,
-                ),
-              ]
+            ? [BoxShadow(color: color.withValues(alpha: 0.2), blurRadius: 6)]
             : [],
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            icon,
-            size: 12,
-            color: isActive ? color : AppColors.textDim,
-          ),
+          Icon(icon, size: 12, color: isActive ? color : colors.textDim),
           const SizedBox(width: 3),
           Text(
             label,
             style: TextStyle(
-              color: isActive ? color : AppColors.textDim,
+              color: isActive ? color : colors.textDim,
               fontSize: 11,
               fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
             ),

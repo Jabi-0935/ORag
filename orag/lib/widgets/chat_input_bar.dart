@@ -1,12 +1,12 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+
 import '../theme/app_theme.dart';
 
 /// Chat text input bar with voice input support.
-///  - Disabled (during init): grayed out, "AI is loading…"
-///  - Ready: active input with mic + send buttons
-///  - Generating: disabled, shows animated stop button
 class ChatInputBar extends StatefulWidget {
   final TextEditingController controller;
   final bool enabled;
@@ -68,25 +68,28 @@ class _ChatInputBarState extends State<ChatInputBar> {
     if (_isListening) {
       await _speech.stop();
       setState(() => _isListening = false);
-    } else {
-      if (!_speechAvailable) {
-        await _initSpeech();
-        if (!_speechAvailable) return;
-      }
-      setState(() => _isListening = true);
-      await _speech.listen(
-        onResult: (result) {
-          widget.controller.text = result.recognizedWords;
-          widget.controller.selection = TextSelection.fromPosition(
-            TextPosition(offset: widget.controller.text.length),
-          );
-        },
+      return;
+    }
+
+    if (!_speechAvailable) {
+      await _initSpeech();
+      if (!_speechAvailable) return;
+    }
+    setState(() => _isListening = true);
+    await _speech.listen(
+      onResult: (result) {
+        widget.controller.text = result.recognizedWords;
+        widget.controller.selection = TextSelection.fromPosition(
+          TextPosition(offset: widget.controller.text.length),
+        );
+      },
+      listenOptions: stt.SpeechListenOptions(
         listenFor: const Duration(seconds: 30),
         pauseFor: const Duration(seconds: 3),
         partialResults: true,
         localeId: 'en_US',
-      );
-    }
+      ),
+    );
   }
 
   @override
@@ -100,109 +103,111 @@ class _ChatInputBarState extends State<ChatInputBar> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
       color: Colors.transparent,
       child: SafeArea(
         top: false,
-        child: Container(
-          decoration: BoxDecoration(
-            color: _isListening
-                ? AppColors.primary.withValues(alpha: 0.05)
-                : AppColors.inputFill,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: _isListening
-                  ? AppColors.primary.withValues(alpha: 0.4)
-                  : AppColors.inputBorder,
-              width: 1,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(24),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+            child: Container(
+              decoration: BoxDecoration(
+                color: _isListening
+                    ? scheme.primary.withValues(alpha: 0.08)
+                    : colors.inputFill,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(
+                  color: _isListening
+                      ? scheme.primary.withValues(alpha: 0.42)
+                      : colors.inputBorder,
+                  width: 1,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: colors.shadow.withValues(alpha: 0.22),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (_showActions)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6, bottom: 6),
+                      child: _buildSmallIconBtn(
+                        icon: Icons.add_rounded,
+                        color: colors.textSecondary,
+                        onPressed: widget.onAddFile,
+                      ),
+                    ),
+                  Expanded(
+                    child: KeyboardListener(
+                      focusNode: FocusNode(),
+                      onKeyEvent: (event) {
+                        if (event is KeyDownEvent &&
+                            event.logicalKey == LogicalKeyboardKey.enter &&
+                            !HardwareKeyboard.instance.isShiftPressed &&
+                            widget.enabled &&
+                            !widget.isGenerating) {
+                          widget.onSend();
+                        }
+                      },
+                      child: TextField(
+                        controller: widget.controller,
+                        enabled: widget.enabled && !widget.isGenerating,
+                        maxLines: 4,
+                        minLines: 1,
+                        style: TextStyle(
+                          color: colors.textPrimary,
+                          fontSize: 15,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: _hintText,
+                          hintStyle: TextStyle(
+                            color: colors.textDim,
+                            fontSize: 15,
+                          ),
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.only(
+                            left: _showActions ? 4 : 18,
+                            right: 4,
+                            top: 12,
+                            bottom: 12,
+                          ),
+                        ),
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: widget.enabled && !widget.isGenerating
+                            ? (_) => widget.onSend()
+                            : null,
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 5, bottom: 5),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_showActions) ...[
+                          _MicButton(
+                            isListening: _isListening,
+                            onTap: _toggleListening,
+                          ),
+                          const SizedBox(width: 4),
+                        ],
+                        _actionButton(),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.2),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              // Add file button (inside, left side)
-              if (_showActions)
-                Padding(
-                  padding: const EdgeInsets.only(left: 6, bottom: 6),
-                  child: _buildSmallIconBtn(
-                    icon: Icons.add_rounded,
-                    color: AppColors.textSecondary,
-                    onPressed: widget.onAddFile,
-                  ),
-                ),
-
-              // Text field
-              Expanded(
-                child: KeyboardListener(
-                  focusNode: FocusNode(),
-                  onKeyEvent: (event) {
-                    if (event is KeyDownEvent &&
-                        event.logicalKey == LogicalKeyboardKey.enter &&
-                        !HardwareKeyboard.instance.isShiftPressed &&
-                        widget.enabled &&
-                        !widget.isGenerating) {
-                      widget.onSend();
-                    }
-                  },
-                  child: TextField(
-                    controller: widget.controller,
-                    enabled: widget.enabled && !widget.isGenerating,
-                    maxLines: 4,
-                    minLines: 1,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 15,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: _hintText,
-                      hintStyle: const TextStyle(
-                        color: AppColors.textDim,
-                        fontSize: 15,
-                      ),
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.only(
-                        left: _showActions ? 4 : 18,
-                        right: 4,
-                        top: 12,
-                        bottom: 12,
-                      ),
-                    ),
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: widget.enabled && !widget.isGenerating
-                        ? (_) => widget.onSend()
-                        : null,
-                  ),
-                ),
-              ),
-
-              // Right-side action buttons (inside the input container)
-              Padding(
-                padding: const EdgeInsets.only(right: 5, bottom: 5),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Mic button
-                    if (_showActions) ...[
-                      _MicButton(
-                        isListening: _isListening,
-                        onTap: _toggleListening,
-                      ),
-                      const SizedBox(width: 4),
-                    ],
-                    // Send or Stop button
-                    _actionButton(),
-                  ],
-                ),
-              ),
-            ],
           ),
         ),
       ),
@@ -214,13 +219,14 @@ class _ChatInputBarState extends State<ChatInputBar> {
     required Color color,
     required VoidCallback onPressed,
   }) {
+    final colors = context.colors;
     return GestureDetector(
       onTap: onPressed,
       child: Container(
         width: 34,
         height: 34,
         decoration: BoxDecoration(
-          color: AppColors.surfaceLight.withValues(alpha: 0.6),
+          color: colors.surfaceLight.withValues(alpha: 0.78),
           borderRadius: BorderRadius.circular(17),
         ),
         child: Icon(icon, size: 20, color: color),
@@ -229,34 +235,36 @@ class _ChatInputBarState extends State<ChatInputBar> {
   }
 
   String get _hintText {
-    if (!widget.enabled) return 'AI is loading…';
-    if (widget.isGenerating) return 'Generating…';
-    if (_isListening) return 'Listening…';
+    if (!widget.enabled) return 'AI is loading...';
+    if (widget.isGenerating) return 'Generating...';
+    if (_isListening) return 'Listening...';
     if (widget.ragMode) {
       return widget.activeDocumentName != null
-          ? 'Ask about ${widget.activeDocumentName}…'
-          : 'Ask a question about your document…';
+          ? 'Ask about ${widget.activeDocumentName}...'
+          : 'Ask a question about your document...';
     }
-    return 'Ask me anything…';
+    return 'Ask me anything...';
   }
 
   Widget _actionButton() {
     if (widget.isGenerating) {
       return _StopButton(onTap: widget.onStop);
     }
-    return _SendButton(
-      onTap: widget.enabled ? widget.onSend : null,
-    );
+    return _SendButton(onTap: widget.enabled ? widget.onSend : null);
   }
 }
 
 class _MicButton extends StatelessWidget {
   final bool isListening;
   final VoidCallback onTap;
+
   const _MicButton({required this.isListening, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -265,13 +273,13 @@ class _MicButton extends StatelessWidget {
         height: 34,
         decoration: BoxDecoration(
           color: isListening
-              ? AppColors.error.withValues(alpha: 0.15)
-              : AppColors.secondary.withValues(alpha: 0.1),
+              ? colors.error.withValues(alpha: 0.15)
+              : scheme.secondary.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(17),
         ),
         child: Icon(
           isListening ? Icons.mic_off_rounded : Icons.mic_rounded,
-          color: isListening ? AppColors.error : AppColors.secondary,
+          color: isListening ? colors.error : scheme.secondary,
           size: 18,
         ),
       ),
@@ -281,11 +289,15 @@ class _MicButton extends StatelessWidget {
 
 class _SendButton extends StatelessWidget {
   final VoidCallback? onTap;
+
   const _SendButton({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
     final active = onTap != null;
+
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -294,13 +306,13 @@ class _SendButton extends StatelessWidget {
         height: 36,
         decoration: BoxDecoration(
           color: active
-              ? AppColors.primary
-              : AppColors.primary.withValues(alpha: 0.2),
+              ? scheme.primary
+              : scheme.primary.withValues(alpha: 0.18),
           borderRadius: BorderRadius.circular(18),
         ),
         child: Icon(
           Icons.arrow_upward_rounded,
-          color: active ? AppColors.background : AppColors.textDim,
+          color: active ? scheme.onPrimary : colors.textDim,
           size: 20,
         ),
       ),
@@ -310,6 +322,7 @@ class _SendButton extends StatelessWidget {
 
 class _StopButton extends StatefulWidget {
   final VoidCallback onTap;
+
   const _StopButton({required this.onTap});
 
   @override
@@ -337,6 +350,8 @@ class _StopButtonState extends State<_StopButton>
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+
     return GestureDetector(
       onTap: widget.onTap,
       child: AnimatedBuilder(
@@ -346,12 +361,11 @@ class _StopButtonState extends State<_StopButton>
             width: 36,
             height: 36,
             decoration: BoxDecoration(
-              color: AppColors.error
-                  .withValues(alpha: 0.8 + 0.2 * _pulse.value),
+              color: colors.error.withValues(alpha: 0.8 + 0.2 * _pulse.value),
               borderRadius: BorderRadius.circular(18),
               boxShadow: [
                 BoxShadow(
-                  color: AppColors.error.withValues(alpha: 0.3 * _pulse.value),
+                  color: colors.error.withValues(alpha: 0.3 * _pulse.value),
                   blurRadius: 12,
                   spreadRadius: 2,
                 ),

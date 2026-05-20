@@ -1,5 +1,6 @@
-import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+
 import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/top_snackbar.dart';
@@ -50,24 +51,19 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
 
     setState(() {
       _isUploading = true;
-      _uploadStatus = 'Reading file…';
+      _uploadStatus = 'Reading file...';
       _uploadStopwatch
         ..reset()
         ..start();
     });
 
-    // Update status periodically during upload
-    final statusTimer = Stream.periodic(
-      const Duration(seconds: 2),
-      (i) => i,
-    ).listen((_) {
-      if (mounted && _isUploading) {
-        final elapsed = _uploadStopwatch.elapsed.inSeconds;
-        setState(() {
-          _uploadStatus = 'Processing… ${elapsed}s';
+    final statusTimer = Stream.periodic(const Duration(seconds: 2), (i) => i)
+        .listen((_) {
+          if (mounted && _isUploading) {
+            final elapsed = _uploadStopwatch.elapsed.inSeconds;
+            setState(() => _uploadStatus = 'Processing... ${elapsed}s');
+          }
         });
-      }
-    });
 
     final response = await widget.platform.uploadDocument(path);
     statusTimer.cancel();
@@ -75,46 +71,26 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
     final success = response['success'] == true;
     final message = response['message'] as String? ?? '';
 
-    if (mounted) {
-      setState(() {
-        _isUploading = false;
-        _uploadStatus = '';
-      });
-      showTopSnackBar(
-        context,
-        message: '$message (${_uploadStopwatch.elapsed.inSeconds}s)',
-        backgroundColor: success ? AppColors.success : AppColors.error,
-      );
-      if (success) _loadDocs();
-    }
+    if (!mounted) return;
+    setState(() {
+      _isUploading = false;
+      _uploadStatus = '';
+    });
+    showTopSnackBar(
+      context,
+      message: '$message (${_uploadStopwatch.elapsed.inSeconds}s)',
+      backgroundColor: success ? context.colors.success : context.colors.error,
+    );
+    if (success) _loadDocs();
   }
 
   Future<void> _deleteDoc(int docId, String name) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Delete document?',
-            style: TextStyle(color: AppColors.textPrimary)),
-        content: Text(
-          'Remove "$name" and its chunks from the AI\'s knowledge?',
-          style: const TextStyle(color: AppColors.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel',
-                style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete',
-                style: TextStyle(color: AppColors.error)),
-          ),
-        ],
-      ),
+    final confirmed = await _showConfirm(
+      'Delete document?',
+      'Remove "$name" and its chunks from the AI knowledge?',
+      confirmLabel: 'Delete',
     );
-    if (confirmed == true) {
+    if (confirmed) {
       await widget.platform.deleteDocument(docId);
       _loadDocs();
     }
@@ -122,45 +98,64 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
 
   Future<void> _clearAll() async {
     if (_docs.isEmpty) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Clear all documents?',
-            style: TextStyle(color: AppColors.textPrimary)),
-        content: const Text(
-          'This removes all documents from the AI\'s knowledge base.',
-          style: TextStyle(color: AppColors.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel',
-                style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Clear All',
-                style: TextStyle(color: AppColors.error)),
-          ),
-        ],
-      ),
+    final confirmed = await _showConfirm(
+      'Clear all documents?',
+      'This removes all documents from the AI knowledge base.',
+      confirmLabel: 'Clear All',
     );
-    if (confirmed == true) {
+    if (confirmed) {
       await widget.platform.clearDocuments();
       _loadDocs();
     }
   }
 
+  Future<bool> _showConfirm(
+    String title,
+    String content, {
+    required String confirmLabel,
+  }) async {
+    final colors = context.colors;
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: colors.surface,
+            title: Text(title, style: TextStyle(color: colors.textPrimary)),
+            content: Text(
+              content,
+              style: TextStyle(color: colors.textSecondary),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(
+                  'Cancel',
+                  style: TextStyle(color: colors.textSecondary),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(
+                  confirmLabel,
+                  style: TextStyle(color: colors.error),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+
     return Drawer(
-      backgroundColor: AppColors.background,
+      backgroundColor: colors.background,
       child: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 12, 8),
               child: Row(
@@ -169,23 +164,23 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
                     width: 32,
                     height: 32,
                     decoration: BoxDecoration(
-                      color: AppColors.secondary.withValues(alpha: 0.15),
+                      color: scheme.secondary.withValues(alpha: 0.14),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Icon(
+                    child: Icon(
                       Icons.folder_rounded,
                       size: 18,
-                      color: AppColors.secondary,
+                      color: scheme.secondary,
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  Expanded(
                     child: Text(
                       'Documents',
                       style: TextStyle(
-                        color: AppColors.textPrimary,
+                        color: colors.textPrimary,
                         fontSize: 18,
-                        fontWeight: FontWeight.w600,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
                   ),
@@ -194,14 +189,12 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
                       icon: const Icon(Icons.delete_sweep_rounded, size: 20),
                       tooltip: 'Clear all',
                       onPressed: _clearAll,
-                      color: AppColors.textDim,
+                      color: colors.textDim,
                     ),
                 ],
               ),
             ),
-            const Divider(color: AppColors.divider, height: 1),
-
-            // Upload button
+            Divider(color: colors.divider, height: 1),
             Padding(
               padding: const EdgeInsets.all(16),
               child: SizedBox(
@@ -209,21 +202,25 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
                 child: ElevatedButton.icon(
                   onPressed: _isUploading ? null : _pickAndUpload,
                   icon: _isUploading
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 16,
                           height: 16,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: AppColors.background,
+                            color: scheme.onPrimary,
                           ),
                         )
                       : const Icon(Icons.upload_file_rounded, size: 18),
-                  label: Text(_isUploading
-                      ? _uploadStatus.isNotEmpty ? _uploadStatus : 'Uploading…'
-                      : 'Upload PDF / TXT'),
+                  label: Text(
+                    _isUploading
+                        ? _uploadStatus.isNotEmpty
+                              ? _uploadStatus
+                              : 'Uploading...'
+                        : 'Upload PDF / TXT',
+                  ),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: AppColors.background,
+                    backgroundColor: scheme.primary,
+                    foregroundColor: scheme.onPrimary,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -232,18 +229,14 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
                 ),
               ),
             ),
-
-            // Document list
             Expanded(
               child: _isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(
-                        color: AppColors.primary,
-                      ),
+                  ? Center(
+                      child: CircularProgressIndicator(color: scheme.primary),
                     )
                   : _docs.isEmpty
-                      ? _buildEmptyState()
-                      : _buildDocList(),
+                  ? _buildEmptyState()
+                  : _buildDocList(),
             ),
           ],
         ),
@@ -252,6 +245,8 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
   }
 
   Widget _buildEmptyState() {
+    final colors = context.colors;
+
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -259,23 +254,17 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
           Icon(
             Icons.description_outlined,
             size: 48,
-            color: AppColors.textDim.withValues(alpha: 0.5),
+            color: colors.textDim.withValues(alpha: 0.55),
           ),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'No documents yet',
-            style: TextStyle(
-              color: AppColors.textDim,
-              fontSize: 14,
-            ),
+            style: TextStyle(color: colors.textDim, fontSize: 14),
           ),
           const SizedBox(height: 4),
-          const Text(
+          Text(
             'Upload a PDF or TXT to enable\nAI-powered document Q&A',
-            style: TextStyle(
-              color: AppColors.textDim,
-              fontSize: 12,
-            ),
+            style: TextStyle(color: colors.textDim, fontSize: 12),
             textAlign: TextAlign.center,
           ),
         ],
@@ -294,55 +283,57 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
         final chunks = doc['num_chunks'] as int? ?? 0;
         final docId = doc['id'] as int? ?? 0;
         final isPdf = name.toLowerCase().endsWith('.pdf');
-
-        return Container(
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.divider, width: 1),
-          ),
-          child: ListTile(
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-            leading: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: (isPdf ? AppColors.error : AppColors.primary)
-                    .withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(
-                isPdf ? Icons.picture_as_pdf_rounded : Icons.text_snippet_rounded,
-                size: 18,
-                color: isPdf ? AppColors.error : AppColors.primary,
-              ),
-            ),
-            title: Text(
-              name,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(
-              '$chunks chunks',
-              style: const TextStyle(
-                color: AppColors.textDim,
-                fontSize: 12,
-              ),
-            ),
-            trailing: IconButton(
-              icon: const Icon(Icons.close_rounded, size: 18),
-              color: AppColors.textDim,
-              onPressed: () => _deleteDoc(docId, name),
-            ),
-          ),
-        );
+        return _buildDocItem(name, chunks, docId, isPdf);
       },
+    );
+  }
+
+  Widget _buildDocItem(String name, int chunks, int docId, bool isPdf) {
+    final colors = context.colors;
+    final scheme = Theme.of(context).colorScheme;
+    final docColor = isPdf ? colors.error : scheme.primary;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colors.divider, width: 1),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+        leading: Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: docColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(
+            isPdf ? Icons.picture_as_pdf_rounded : Icons.text_snippet_rounded,
+            size: 18,
+            color: docColor,
+          ),
+        ),
+        title: Text(
+          name,
+          style: TextStyle(
+            color: colors.textPrimary,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          '$chunks chunks',
+          style: TextStyle(color: colors.textDim, fontSize: 12),
+        ),
+        trailing: IconButton(
+          icon: const Icon(Icons.close_rounded, size: 18),
+          color: colors.textDim,
+          onPressed: () => _deleteDoc(docId, name),
+        ),
+      ),
     );
   }
 }
