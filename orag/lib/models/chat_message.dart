@@ -62,6 +62,7 @@ class ChatMessage {
   final DateTime timestamp;
   bool isStreaming;
   List<SourceAttribution> sources;
+  String? responseStyle;
 
   /// Raw <think>…</think> reasoning block captured from Qwen3.
   /// Empty string if the model produced no thinking block.
@@ -78,6 +79,7 @@ class ChatMessage {
     List<SourceAttribution>? sources,
     this.thinkingText = '',
     List<ParentChunk>? parentChunks,
+    this.responseStyle,
   })  : timestamp = timestamp ?? DateTime.now(),
         sources = sources ?? [],
         parentChunks = parentChunks ?? [];
@@ -104,6 +106,7 @@ class ChatMessage {
     'sources': sources.map((s) => s.toJson()).toList(),
     'thinking_text': thinkingText,
     'parent_chunks': parentChunks.map((c) => c.toJson()).toList(),
+    'response_style': responseStyle,
   };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
@@ -124,6 +127,7 @@ class ChatMessage {
       sources: srcList,
       thinkingText: json['thinking_text'] as String? ?? '',
       parentChunks: chunkList,
+      responseStyle: json['response_style'] as String?,
     );
   }
 }

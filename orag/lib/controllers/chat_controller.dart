@@ -244,6 +244,7 @@ class ChatController extends Notifier<ChatState> {
       role: MessageRole.assistant,
       text: '',
       isStreaming: true,
+      responseStyle: state.responseStyle.name,
     );
     _activeAiMsg = aiMsg;
 
@@ -307,6 +308,7 @@ class ChatController extends Notifier<ChatState> {
       role: MessageRole.assistant,
       text: '',
       isStreaming: true,
+      responseStyle: state.responseStyle.name,
     );
     _activeAiMsg = aiMsg;
 

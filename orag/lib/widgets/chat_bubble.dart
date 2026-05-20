@@ -106,14 +106,6 @@ class _ChatBubbleState extends State<ChatBubble> {
                       height: 1.5,
                     ),
                   ),
-                  const SizedBox(height: 3),
-                  Text(
-                    DateFormat.jm().format(widget.message.timestamp),
-                    style: TextStyle(
-                      color: AppColors.textDim.withValues(alpha: 0.35),
-                      fontSize: 9.5,
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -135,7 +127,28 @@ class _ChatBubbleState extends State<ChatBubble> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _avatar(false),
+          Column(
+            children: [
+              _avatar(false),
+              if (widget.message.responseStyle != null) ...[
+                const SizedBox(height: 8),
+                Tooltip(
+                  message: widget.message.responseStyle == 'concise'
+                      ? 'Concise Mode'
+                      : 'Detailed Mode',
+                  child: Icon(
+                    widget.message.responseStyle == 'concise'
+                        ? Icons.bolt_rounded
+                        : Icons.auto_awesome_rounded,
+                    size: 16,
+                    color: widget.message.responseStyle == 'concise'
+                        ? Colors.amber
+                        : Colors.blue,
+                  ),
+                ),
+              ],
+            ],
+          ),
           const SizedBox(width: 10),
           Flexible(
             child: Column(
@@ -144,24 +157,11 @@ class _ChatBubbleState extends State<ChatBubble> {
                 // AI markdown content — directly on chat background
                 _aiMarkdown(),
 
-                // Timestamp
-                Padding(
-                  padding: const EdgeInsets.only(top: 3, left: 2),
-                  child: Text(
-                    DateFormat.jm().format(widget.message.timestamp),
-                    style: TextStyle(
-                      color: AppColors.textDim.withValues(alpha: 0.3),
-                      fontSize: 9.5,
-                    ),
-                  ),
-                ),
-
                 // Action bar: icon-only buttons
                 if (hasActions)
                   Padding(
                     padding: const EdgeInsets.only(top: 6, left: 0),
                     child: Row(
-                      mainAxisSize: MainAxisSize.min,
                       children: [
                         _actionIcon(
                           icon: _isSpeaking
