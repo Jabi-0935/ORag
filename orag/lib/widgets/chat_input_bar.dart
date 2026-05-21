@@ -107,7 +107,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
     final scheme = Theme.of(context).colorScheme;
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       color: Colors.transparent,
       child: SafeArea(
         top: false,
@@ -136,11 +136,11 @@ class _ChatInputBarState extends State<ChatInputBar> {
                 ],
               ),
               child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   if (_showActions)
                     Padding(
-                      padding: const EdgeInsets.only(left: 6, bottom: 6),
+                      padding: const EdgeInsets.only(left: 6),
                       child: _buildSmallIconBtn(
                         icon: Icons.add_rounded,
                         color: colors.textSecondary,
@@ -178,8 +178,8 @@ class _ChatInputBarState extends State<ChatInputBar> {
                           contentPadding: EdgeInsets.only(
                             left: _showActions ? 4 : 18,
                             right: 4,
-                            top: 12,
-                            bottom: 12,
+                            top: 10,
+                            bottom: 10,
                           ),
                         ),
                         textInputAction: TextInputAction.send,
@@ -190,7 +190,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
                     ),
                   ),
                   Padding(
-                    padding: const EdgeInsets.only(right: 5, bottom: 5),
+                    padding: const EdgeInsets.only(right: 5),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [

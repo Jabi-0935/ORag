@@ -176,65 +176,62 @@ class _AnimatedLogo extends StatelessWidget {
     final colors = context.colors;
     final primary = Theme.of(context).colorScheme.primary;
 
-    return SizedBox(
-      width: 124,
-      height: 124,
-      child: AnimatedBuilder(
-        animation: controller,
-        builder: (context, child) {
-          final pulse = 0.5 + (math.sin(controller.value * math.pi * 2) * 0.5);
-          return Stack(
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, child) {
+        final pulse = 0.5 + (math.sin(controller.value * math.pi * 2) * 0.5);
+
+        return SizedBox(
+          width: 116,
+          height: 116,
+          child: Stack(
             alignment: Alignment.center,
             children: [
-              Transform.rotate(
-                angle: controller.value * math.pi * 2,
-                child: Container(
-                  width: 118,
-                  height: 118,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: primary.withValues(alpha: 0.16),
-                      width: 1.4,
-                    ),
+              Container(
+                width: 74 + pulse * 4,
+                height: 74 + pulse * 4,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [
+                      primary.withValues(alpha: 0.08),
+                      primary.withValues(alpha: 0.02),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.65, 1.0],
                   ),
                 ),
               ),
               Container(
-                width: 104 + pulse * 6,
-                height: 104 + pulse * 6,
+                width: 84,
+                height: 84,
                 decoration: BoxDecoration(
-                  shape: BoxShape.circle,
+                  color: colors.surface.withValues(alpha: 0.82),
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: colors.divider.withValues(alpha: 0.85)),
                   boxShadow: [
                     BoxShadow(
-                      color: colors.glowPrimary.withValues(alpha: 0.65),
-                      blurRadius: 28 + pulse * 10,
-                      spreadRadius: 2,
+                      color: colors.shadow.withValues(alpha: 0.06),
+                      blurRadius: 12,
+                      offset: const Offset(0, 6),
                     ),
                   ],
                 ),
+                clipBehavior: Clip.antiAlias,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Image.asset(
+                    'assets/logo.png',
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) =>
+                        const SizedBox.shrink(),
+                  ),
+                ),
               ),
-              child!,
             ],
-          );
-        },
-        child: Container(
-          width: 88,
-          height: 88,
-          decoration: BoxDecoration(
-            color: colors.surface.withValues(alpha: 0.72),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: colors.divider),
           ),
-          clipBehavior: Clip.antiAlias,
-          child: Image.asset(
-            'assets/logo.png',
-            fit: BoxFit.contain,
-            errorBuilder: (context, error, stackTrace) =>
-                const SizedBox.shrink(),
-          ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
