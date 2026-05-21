@@ -129,68 +129,69 @@ extension OragThemeX on BuildContext {
 class AppTheme {
   AppTheme._();
 
-  static const Color _violet = Color(0xFF7C3AED);
-  static const Color _violetDark = Color(0xFF9F7AEA);
-  static const Color _rose = Color(0xFFB75C8D);
+  // Modern Slate palette (primary blue, secondary teal)
+  static const Color _teal = Color(0xFF2563EB); // primary (blue)
+  static const Color _tealDark = Color(0xFF60A5FA); // primary (dark variant)
+  static const Color _blueAccent = Color(0xFF06B6D4); // secondary (teal)
 
   static const OragColors lightColors = OragColors(
-    background: Color(0xFFFFFAF7),
+    background: Color(0xFFF6F8FA),
     surface: Color(0xFFFFFFFF),
-    surfaceLight: Color(0xFFF6F0FA),
-    primaryDim: Color(0xFF6D28D9),
-    userBubble: Color(0xFFF0E7FF),
-    aiBubble: Color(0xFFFFFAF7),
-    textPrimary: Color(0xFF241B2F),
-    textSecondary: Color(0xFF665C73),
-    textDim: Color(0xFF94899F),
-    success: Color(0xFF2F8A62),
-    warning: Color(0xFFC7831C),
-    error: Color(0xFFD34A4A),
-    divider: Color(0xFFE8DFF0),
-    inputFill: Color(0xEFFFFFFF),
-    inputBorder: Color(0xFFE0D4EA),
-    shimmer: Color(0xFFEDE4F4),
-    glassBackground: Color(0xDDFDF8F5),
-    glowPrimary: Color(0x337C3AED),
-    glowSecondary: Color(0x26B75C8D),
-    shadow: Color(0x1F3A253F),
+    surfaceLight: Color(0xFFF1F5FB),
+    primaryDim: Color(0xFF2563EB),
+    userBubble: Color(0xFFF1F5F9),
+    aiBubble: Color(0xFFFFFFFF),
+    textPrimary: Color(0xFF0F172A),
+    textSecondary: Color(0xFF475569),
+    textDim: Color(0xFF7B8794),
+    success: Color(0xFF16A34A),
+    warning: Color(0xFFF59E0B),
+    error: Color(0xFFEF4444),
+    divider: Color(0xFFE6EEF6),
+    inputFill: Color(0xFFF8FAFF),
+    inputBorder: Color(0xFFDCEAFE),
+    shimmer: Color(0xFFEEF7FF),
+    glassBackground: Color(0xFFEFF7FF),
+    glowPrimary: Color(0x332563EB),
+    glowSecondary: Color(0x2606B6D4),
+    shadow: Color(0x1F0B1220),
   );
 
   static const OragColors darkColors = OragColors(
-    background: Color(0xFF15101C),
-    surface: Color(0xFF1F1728),
-    surfaceLight: Color(0xFF2A2034),
-    primaryDim: Color(0xFF7C3AED),
-    userBubble: Color(0xFF342745),
-    aiBubble: Color(0xFF15101C),
-    textPrimary: Color(0xFFF8F3FA),
-    textSecondary: Color(0xFFC8BCD3),
-    textDim: Color(0xFF8F829E),
-    success: Color(0xFF70D6A6),
-    warning: Color(0xFFF2B85B),
+    background: Color(0xFF071428),
+    surface: Color(0xFF0B1B2E),
+    surfaceLight: Color(0xFF122534),
+    primaryDim: Color(0xFF2563EB),
+    userBubble: Color(0xFF0F2436),
+    aiBubble: Color(0xFF071428),
+    textPrimary: Color(0xFFEFF6FF),
+    textSecondary: Color(0xFFBBDFFC),
+    textDim: Color(0xFF85A6C9),
+    success: Color(0xFF34D399),
+    warning: Color(0xFFFBBF24),
     error: Color(0xFFFF7A7A),
-    divider: Color(0xFF3A2D47),
-    inputFill: Color(0xD9231A2D),
-    inputBorder: Color(0xFF493859),
-    shimmer: Color(0xFF3B2E48),
-    glassBackground: Color(0xDD1B1423),
-    glowPrimary: Color(0x3D9F7AEA),
-    glowSecondary: Color(0x2EB75C8D),
+    divider: Color(0xFF0F2A3E),
+    inputFill: Color(0xFF071A28),
+    inputBorder: Color(0xFF123248),
+    shimmer: Color(0xFF0E2A3E),
+    glassBackground: Color(0xDD071428),
+    glowPrimary: Color(0x3D60A5FA),
+    glowSecondary: Color(0x2606B6D4),
     shadow: Color(0x80000000),
   );
 
   static ThemeData get light => _build(
     brightness: Brightness.light,
     colors: lightColors,
-    primary: _violet,
-    secondary: _rose,
+    primary: _teal,
+    secondary: _blueAccent,
   );
 
   static ThemeData get dark => _build(
     brightness: Brightness.dark,
     colors: darkColors,
-    primary: _violetDark,
-    secondary: const Color(0xFFD18AB2),
+    primary: _tealDark,
+    secondary: _blueAccent,
   );
 
   static ThemeData _build({
