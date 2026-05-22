@@ -448,12 +448,18 @@ class ChatController extends Notifier<ChatState> {
 
     for (var file in result.files) {
       if (file.path == null) continue;
-      final response = await _platform.uploadDocument(file.path!);
-      if (response['success'] != true) {
+      try {
+        final response = await _platform.uploadDocument(file.path!);
+        if (response['success'] != true) {
+          allSuccess = false;
+          lastMessage = response['message'] as String? ?? 'Failed to upload ${file.name}';
+          break; // Stop on first error
+        }
+      } catch (e, st) {
+        debugPrint('[ChatController] upload exception for ${file.name}: $e\n$st');
         allSuccess = false;
-        lastMessage =
-            response['message'] as String? ?? 'Failed to upload ${file.name}';
-        break; // Stop on first error
+        lastMessage = 'Upload exception: $e';
+        break;
       }
     }
 

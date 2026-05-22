@@ -72,7 +72,7 @@ void main() {
     expect(find.text('Dark'), findsOneWidget);
   });
 
-  testWidgets('empty state renders hero cards and keeps prompts tappable', (
+  testWidgets('empty state renders redesigned actions and keeps prompts tappable', (
     tester,
   ) async {
     String? prompt;
@@ -89,14 +89,17 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Chat mode'), findsOneWidget);
-    expect(find.text('Document Q&A'), findsOneWidget);
-    expect(find.text('Explain a concept to me'), findsOneWidget);
+    expect(find.byKey(const ValueKey('empty_state_primary_action')), findsOneWidget);
+    expect(find.byKey(const ValueKey('empty_state_documents_action')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('empty_state_prompt_chip_Explain Physics to me')),
+      findsOneWidget,
+    );
 
-    await tester.tap(find.text('Explain a concept to me'));
-    expect(prompt, 'Explain a concept to me');
+    await tester.tap(find.byKey(const ValueKey('empty_state_prompt_chip_Explain Physics to me')));
+    expect(prompt, 'Explain Physics to me');
 
-    await tester.tap(find.text('Document Q&A'));
+    await tester.tap(find.byKey(const ValueKey('empty_state_documents_action')));
     expect(openedDocs, isTrue);
   });
 }

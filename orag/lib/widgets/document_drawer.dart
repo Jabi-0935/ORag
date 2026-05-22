@@ -30,12 +30,27 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
 
   Future<void> _loadDocs() async {
     setState(() => _isLoading = true);
-    final docs = await widget.platform.listDocuments();
-    if (mounted) {
-      setState(() {
-        _docs = docs;
-        _isLoading = false;
-      });
+    try {
+      final docs = await widget.platform.listDocuments();
+      if (mounted) {
+        setState(() {
+          _docs = docs;
+          _isLoading = false;
+        });
+      }
+    } catch (e, st) {
+      debugPrint('[DocumentDrawer] listDocuments error: $e\n$st');
+      if (mounted) {
+        setState(() {
+          _docs = [];
+          _isLoading = false;
+        });
+        showTopSnackBar(
+          context,
+          message: 'Failed to list documents: $e',
+          backgroundColor: context.colors.error,
+        );
+      }
     }
   }
 
@@ -65,7 +80,13 @@ class _DocumentDrawerState extends State<DocumentDrawer> {
           }
         });
 
-    final response = await widget.platform.uploadDocument(path);
+    Map<String, dynamic> response = {'success': false, 'message': 'Upload failed'};
+    try {
+      response = await widget.platform.uploadDocument(path);
+    } catch (e, st) {
+      debugPrint('[DocumentDrawer] uploadDocument exception: $e\n$st');
+      response = {'success': false, 'message': 'Upload exception: $e'};
+    }
     statusTimer.cancel();
     _uploadStopwatch.stop();
     final success = response['success'] == true;
