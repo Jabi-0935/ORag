@@ -5,6 +5,7 @@ import '../controllers/theme_controller.dart';
 import '../services/platform_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/top_snackbar.dart';
+import 'benchmark_screen.dart';
 
 /// Settings, appearance, and engine health screen.
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -640,6 +641,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               Icons.clear_all_rounded,
               colors.warning,
               _clearChat,
+            ),
+            _divider(),
+            _buildActionRow(
+              'Run Benchmark',
+              Icons.speed_rounded,
+              Theme.of(context).colorScheme.primary,
+              () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const BenchmarkScreen()),
+              ),
             ),
           ],
         ),

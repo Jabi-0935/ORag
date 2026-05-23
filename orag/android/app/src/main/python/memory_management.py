@@ -468,6 +468,14 @@ def get_resource_report() -> dict:
     available = get_available_ram_mb()
     battery = get_battery_info()
 
+    # CPU Time
+    cpu_time_sec = 0.0
+    try:
+        t = os.times()
+        cpu_time_sec = t.user + t.system + t.children_user + t.children_system
+    except Exception:
+        pass
+
     return {
         # Profile
         "profile_name": profile["profile"],
@@ -497,6 +505,7 @@ def get_resource_report() -> dict:
 
         # CPU
         "cpu_cores": os.cpu_count() or 0,
+        "cpu_time_sec": cpu_time_sec,
     }
 
 
