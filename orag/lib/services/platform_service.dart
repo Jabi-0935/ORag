@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Represents the current state of the model initialization pipeline.
@@ -32,57 +33,89 @@ class PlatformService {
 
   /// Start Python + download models + load LLM.
   /// Returns a stream of [InitStatus] updates.
+  ///
+  /// Uses a dual approach: listens for push events via EventChannel AND
+  /// polls getStatus every 3s as a fallback. This ensures the UI
+  /// always reflects the current state, even if the EventChannel stream
+  /// temporarily disconnects (which happens on Android when
+  /// receiveBroadcastStream() resubscribes).
   Stream<InitStatus> initPython(String modelPath) {
-    // The init progress comes through a dedicated EventChannel.
-    // We trigger the init via MethodChannel, and listen for progress
-    // on the EventChannel.
     final controller = StreamController<InitStatus>();
+    bool finished = false;
 
-    // Listen to init progress events first
-    StreamSubscription? sub;
-    sub = _initChannel.receiveBroadcastStream().listen(
+    void finish() {
+      if (finished) return;
+      finished = true;
+      if (!controller.isClosed) controller.close();
+    }
+
+    void addStatus(InitStatus status) {
+      if (controller.isClosed) return;
+      controller.add(status);
+      if (status.isReady || status.isError) {
+        finish();
+      }
+    }
+
+    // 1. Listen to EventChannel push events
+    StreamSubscription? eventSub;
+    eventSub = _initChannel.receiveBroadcastStream().listen(
       (event) {
         try {
           final map = event is Map
               ? event.cast<String, dynamic>()
               : jsonDecode(event.toString()) as Map<String, dynamic>;
-          final state = _parseState(map['state'] as String? ?? 'idle');
-          final progress = (map['progress'] as num?)?.toDouble() ?? 0.0;
-          final message = map['message'] as String? ?? '';
-          controller.add(InitStatus(
-            state: state,
-            progress: progress,
-            message: message,
-          ));
-          if (state == InitState.ready || state == InitState.error) {
-            sub?.cancel();
-            controller.close();
-          }
+          addStatus(
+            InitStatus(
+              state: _parseState(map['state'] as String? ?? 'idle'),
+              progress: (map['progress'] as num?)?.toDouble() ?? 0.0,
+              message: map['message'] as String? ?? '',
+            ),
+          );
         } catch (e) {
-          // Ignore malformed events
+          debugPrint('[PlatformService] initPython event parse error: $e');
         }
       },
-      onError: (error) {
-        controller.add(InitStatus(
-          state: InitState.error,
-          progress: 1.0,
-          message: 'Init stream error: $error',
-        ));
-        controller.close();
+      onError: (e) {
+        // EventChannel stream error — don't treat as fatal,
+        // the polling fallback will keep the UI updated.
+        debugPrint('[PlatformService] initPython EventChannel error: $e');
+      },
+      onDone: () {
+        // EventChannel stream ended — polling fallback will take over.
       },
     );
 
-    // Trigger init (fire-and-forget — progress comes via EventChannel)
-    _method.invokeMethod('initPython', {'model_path': modelPath}).catchError(
-      (e) {
-        controller.add(InitStatus(
+    // 2. Trigger init (fire-and-forget — progress comes via EventChannel)
+    _method.invokeMethod('initPython', {'model_path': modelPath}).catchError((
+      e,
+    ) {
+      addStatus(
+        InitStatus(
           state: InitState.error,
           progress: 1.0,
           message: 'Init failed: $e',
-        ));
-        if (!controller.isClosed) controller.close();
-      },
-    );
+        ),
+      );
+    });
+
+    // 3. Polling fallback: every 3 seconds, check cached status
+    //    This is non-blocking on Android (returns cached Kotlin-level state).
+    Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (finished) {
+        timer.cancel();
+        eventSub?.cancel();
+        return;
+      }
+      getStatus()
+          .then((status) {
+            if (finished) return;
+            addStatus(status);
+          })
+          .catchError((e) {
+            debugPrint('[PlatformService] polling fallback error: $e');
+          });
+    });
 
     return controller.stream;
   }
@@ -99,18 +132,23 @@ class PlatformService {
           message: map['message'] as String? ?? '',
         );
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[PlatformService] getStatus error: $e');
+    }
     return const InitStatus();
   }
 
   // ---- Chat ----
 
-  /// Start streaming chat. Returns a broadcast stream of token strings.
-  /// The stream emits individual tokens as they arrive.
-  /// When generation is finished, '__STREAM_END__' is emitted then the
-  /// stream effectively finishes (caller should cancel subscription).
-  Stream<String> chatStream(String query) {
-    final controller = StreamController<String>();
+  /// Start streaming chat. Returns a record of (tokenStream, resultFuture).
+  /// Tokens stream as they arrive. The result future resolves with
+  /// {answer, thinking} JSON when generation is complete.
+  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) chatStream(
+    String query, {
+    String responseStyle = 'concise',
+  }) {
+    final tokenController = StreamController<String>();
+    final resultCompleter = Completer<Map<String, dynamic>>();
 
     StreamSubscription? sub;
     sub = _streamChannel.receiveBroadcastStream().listen(
@@ -118,30 +156,48 @@ class PlatformService {
         final token = event.toString();
         if (token == '__STREAM_END__') {
           sub?.cancel();
-          controller.close();
+          tokenController.close();
         } else {
-          controller.add(token);
+          tokenController.add(token);
         }
       },
       onError: (error) {
-        controller.addError(error);
-        controller.close();
+        tokenController.addError(error);
+        tokenController.close();
       },
     );
 
-    _method.invokeMethod('chatStream', {'query': query}).catchError((e) {
-      controller.addError(e);
-      if (!controller.isClosed) controller.close();
-    });
+    _method
+        .invokeMethod('chatStream', {
+          'query': query,
+          'response_style': responseStyle,
+        })
+        .then((result) {
+          try {
+            final json = jsonDecode(result as String) as Map<String, dynamic>;
+            resultCompleter.complete(json);
+          } catch (e) {
+            resultCompleter.complete({});
+          }
+        })
+        .catchError((e) {
+          if (!tokenController.isClosed) {
+            tokenController.addError(e);
+            tokenController.close();
+          }
+          resultCompleter.complete({});
+        });
 
-    return controller.stream;
+    return (tokens: tokenController.stream, result: resultCompleter.future);
   }
 
   /// Stop current generation.
   Future<void> stop() async {
     try {
       await _method.invokeMethod('stop');
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[PlatformService] stop error: $e');
+    }
   }
 
   /// Clear conversation memory.
@@ -155,10 +211,9 @@ class PlatformService {
   /// Returns {success: bool, message: String}
   Future<Map<String, dynamic>> uploadDocument(String filePath) async {
     try {
-      final result = await _method.invokeMethod(
-        'uploadDocument',
-        {'file_path': filePath},
-      );
+      final result = await _method.invokeMethod('uploadDocument', {
+        'file_path': filePath,
+      });
       return jsonDecode(result as String) as Map<String, dynamic>;
     } catch (e) {
       return {'success': false, 'message': 'Upload failed: $e'};
@@ -171,7 +226,8 @@ class PlatformService {
       final result = await _method.invokeMethod('listDocuments');
       final list = jsonDecode(result as String) as List;
       return list.cast<Map<String, dynamic>>();
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PlatformService] listDocuments error: $e');
       return [];
     }
   }
@@ -179,13 +235,13 @@ class PlatformService {
   /// Delete a document by ID.
   Future<bool> deleteDocument(int docId) async {
     try {
-      final result = await _method.invokeMethod(
-        'deleteDocument',
-        {'doc_id': docId},
-      );
+      final result = await _method.invokeMethod('deleteDocument', {
+        'doc_id': docId,
+      });
       final json = jsonDecode(result as String) as Map<String, dynamic>;
       return json['success'] == true;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PlatformService] deleteDocument error: $e');
       return false;
     }
   }
@@ -196,7 +252,8 @@ class PlatformService {
       final result = await _method.invokeMethod('clearDocuments');
       final json = jsonDecode(result as String) as Map<String, dynamic>;
       return json['success'] == true;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PlatformService] clearDocuments error: $e');
       return false;
     }
   }
@@ -206,7 +263,10 @@ class PlatformService {
   /// Start a RAG streaming query. Streams tokens, then returns sources via
   /// the MethodChannel result (JSON with answer + sources).
   /// Returns a record of (tokenStream, sourcesFuture).
-  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) ragStream(String query) {
+  ({Stream<String> tokens, Future<Map<String, dynamic>> result}) ragStream(
+    String query, {
+    String responseStyle = 'concise',
+  }) {
     final tokenController = StreamController<String>();
     final resultCompleter = Completer<Map<String, dynamic>>();
 
@@ -228,20 +288,26 @@ class PlatformService {
     );
 
     // Invoke ragStream — the result contains sources JSON
-    _method.invokeMethod('ragStream', {'query': query}).then((result) {
-      try {
-        final json = jsonDecode(result as String) as Map<String, dynamic>;
-        resultCompleter.complete(json);
-      } catch (e) {
-        resultCompleter.complete({});
-      }
-    }).catchError((e) {
-      if (!tokenController.isClosed) {
-        tokenController.addError(e);
-        tokenController.close();
-      }
-      resultCompleter.complete({});
-    });
+    _method
+        .invokeMethod('ragStream', {
+          'query': query,
+          'response_style': responseStyle,
+        })
+        .then((result) {
+          try {
+            final json = jsonDecode(result as String) as Map<String, dynamic>;
+            resultCompleter.complete(json);
+          } catch (e) {
+            resultCompleter.complete({});
+          }
+        })
+        .catchError((e) {
+          if (!tokenController.isClosed) {
+            tokenController.addError(e);
+            tokenController.close();
+          }
+          resultCompleter.complete({});
+        });
 
     return (tokens: tokenController.stream, result: resultCompleter.future);
   }
@@ -253,8 +319,32 @@ class PlatformService {
     try {
       final result = await _method.invokeMethod('getEngineHealth');
       return jsonDecode(result as String) as Map<String, dynamic>;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PlatformService] getEngineHealth error: $e');
       return {};
+    }
+  }
+
+  /// Get live resource usage (memory, battery, profile) for settings screen.
+  Future<Map<String, dynamic>> getResourceUsage() async {
+    try {
+      final result = await _method.invokeMethod('getResourceUsage');
+      return jsonDecode(result as String) as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint('[PlatformService] getResourceUsage error: $e');
+      return {};
+    }
+  }
+
+  // ---- Diagnostics ----
+
+  /// Get init logs for debugging.
+  Future<String> getInitLogs() async {
+    try {
+      final result = await _method.invokeMethod('getInitLogs');
+      return result.toString();
+    } catch (e) {
+      return 'Failed to fetch logs: $e';
     }
   }
 
@@ -275,4 +365,3 @@ class PlatformService {
     }
   }
 }
-

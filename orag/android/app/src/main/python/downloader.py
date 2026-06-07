@@ -32,23 +32,21 @@ from config import (
 
 QWEN_MODEL: dict = {
     "id": "qwen",
-    "label": "Qwen 2.5 1.5B Instruct Compressed (~1.12 GB)",
+    "display_label": "Chat Model",
     "repo_id": "cracker0935/Compressed_RAG_Models",
-    "filename": "qwen2.5-1.5b-instruct-compressed.gguf",
+    "filename": "Qwen3.5-2B-Q4_K_M.gguf",
     "revision": "main",
-    "size_mb": 1120,
     "min_bytes": 500 * 1024 * 1024,
-    "url": "https://huggingface.co/cracker0935/Compressed_RAG_Models/resolve/main/qwen2.5-1.5b-instruct-compressed.gguf",
+    "url": "https://huggingface.co/cracker0935/Compressed_RAG_Models/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
 }
 
 
 NOMIC_MODEL: dict = {
     "id": "nomic",
-    "label": "Nomic Embed Text v1.5 Compressed (~84 MB)",
+    "display_label": "Embedding Model",
     "repo_id": "cracker0935/Compressed_RAG_Models",
     "filename": "nomic-embed-text-v1.5-compressed.gguf",
     "revision": "main",
-    "size_mb": 84,
     "min_bytes": 30 * 1024 * 1024,
     "url": "https://huggingface.co/cracker0935/Compressed_RAG_Models/resolve/main/nomic-embed-text-v1.5-compressed.gguf",
 }
@@ -78,14 +76,12 @@ def set_model_dir(model_path: Optional[str]) -> None:
 
 
 def _android_external_models_dir():
-    try:
-        from android import mActivity  # type: ignore
-
-        ext_dir = mActivity.getExternalFilesDir(None)
-        if ext_dir is not None:
-            return os.path.join(str(ext_dir), "models")
-    except Exception:
-        pass
+    # In Flutter/Chaquopy, we rely on paths injected into os.environ
+    # rather than the unreliable android.mActivity bridge.
+    priv = os.environ.get("ANDROID_PRIVATE")
+    if priv:
+        # We assume models go into a 'models' subfolder of private files
+        return os.path.join(priv, "models")
     return None
 
 
@@ -241,6 +237,7 @@ def _download_via_http(
     """
     Fallback downloader when huggingface_hub is unavailable on-device.
     Supports best-effort resume via HTTP Range requests.
+    Uses real Content-Length from HTTP response for accurate progress.
     """
     url = _hf_resolve_url(repo_id, filename, revision)
     part = dest + ".part"
@@ -272,13 +269,12 @@ def _download_via_http(
             except Exception:
                 pass
 
+        # Determine total size from the real HTTP Content-Length header
         total = 0
         if status == 206 and content_len > 0:
             total = start + content_len
         elif content_len > 0:
             total = content_len
-        elif expected_size_mb > 0:
-            total = int(expected_size_mb * 1_048_576)
 
         mode = "ab" if start > 0 else "wb"
         done = start
@@ -294,9 +290,10 @@ def _download_via_http(
                 if on_progress:
                     if total > 0:
                         frac = min(done / total, 0.99)
-                        on_progress(frac, f"{done/1_048_576:.0f} / {total/1_048_576:.0f} MB")
+                        pct = int(frac * 100)
+                        on_progress(frac, f"Downloading… {pct}%")
                     else:
-                        on_progress(0.05, f"{done/1_048_576:.0f} MB downloaded...")
+                        on_progress(0.05, f"Downloading…")
 
     os.replace(part, dest)
 
@@ -313,12 +310,11 @@ def download_model(
 ) -> None:
     """
     Download a GGUF file from Hugging Face to the local models/ folder.
-    Runs in a background thread.
     """
 
     def _run():
         dest = model_dest_path(filename)
-        print(f"[DOWNLOAD] Starting model download... {filename}")
+        print(f"[DOWNLOAD] Starting model download...")
 
         if (
             not force_download
@@ -327,112 +323,33 @@ def download_model(
         ):
             print(f"[DOWNLOAD] Already downloaded: {filename}")
             if on_progress:
-                on_progress(1.0, "Already downloaded.")
+                on_progress(1.0, f"Ready: {filename}")
             if on_done:
                 on_done(True, dest)
             return
 
-        hf_hub_download = None
         print("[DOWNLOAD] Using HTTP downloader path")
 
         if on_progress:
-            on_progress(0.02, "Connecting to Hugging Face...")
-
-        if hf_hub_download is None:
-            try:
-                _download_via_http(
-                    repo_id=repo_id,
-                    filename=filename,
-                    revision=revision,
-                    dest=dest,
-                    expected_size_mb=expected_size_mb,
-                    on_progress=on_progress,
-                )
-                if on_progress:
-                    on_progress(1.0, "Download complete.")
-                if on_done:
-                    on_done(True, dest)
-            except urllib.error.URLError as exc:
-                if on_done:
-                    on_done(False, f"Download failed (network): {exc}")
-            except Exception as exc:
-                if on_done:
-                    on_done(False, f"Download failed: {exc}")
-            return
-
-        # Use local manifest size for progress tracking; avoids extra metadata
-        # calls that can stall/fail on some Android networks.
-        total_bytes = int(expected_size_mb * 1_048_576) if expected_size_mb > 0 else 0
-        stop_poll = threading.Event()
-
-        def _poller():
-            incomplete_candidates = [
-                dest + ".incomplete",
-                dest + ".part",
-            ]
-            pulse = 0.02
-            while not stop_poll.wait(0.5):
-                check = dest
-                for candidate in incomplete_candidates:
-                    if os.path.isfile(candidate):
-                        check = candidate
-                        break
-
-                if os.path.isfile(check):
-                    done = os.path.getsize(check)
-                    print(f"[DOWNLOAD] Downloaded {done/1_048_576:.2f} MB")
-                    if total_bytes:
-                        frac = min(done / total_bytes, 0.99)
-                        mb_done = done / 1_048_576
-                        mb_total = total_bytes / 1_048_576
-                        if on_progress:
-                            on_progress(frac, f"{mb_done:.0f} / {mb_total:.0f} MB")
-                    elif on_progress:
-                        mb_done = done / 1_048_576
-                        on_progress(0.0, f"{mb_done:.0f} MB downloaded...")
-                elif on_progress:
-                    pulse = min(pulse + 0.005, 0.08)
-                    on_progress(pulse, "Preparing download...")
-
-        poll_thread = threading.Thread(target=_poller, daemon=True)
-        poll_thread.start()
+            on_progress(0.02, "Connecting…")
 
         try:
-            kwargs: dict = {
-                "repo_id": repo_id,
-                "filename": filename,
-                "revision": revision,
-                "local_dir": _models_dir(),
-            }
-
-            try:
-                import inspect
-                from huggingface_hub import hf_hub_download as _hfd
-
-                sig = inspect.signature(_hfd).parameters
-                if "local_dir_use_symlinks" in sig:
-                    kwargs["local_dir_use_symlinks"] = False
-                if force_download and "force_download" in sig:
-                    kwargs["force_download"] = True
-            except Exception:
-                pass
-
-            cached = hf_hub_download(**kwargs)
-
-            stop_poll.set()
-            poll_thread.join(timeout=1)
-
-            if os.path.abspath(cached) != os.path.abspath(dest):
-                shutil.copy2(cached, dest)
-
+            _download_via_http(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                dest=dest,
+                expected_size_mb=expected_size_mb,
+                on_progress=on_progress,
+            )
             if on_progress:
                 on_progress(1.0, "Download complete.")
             if on_done:
                 on_done(True, dest)
-
+        except urllib.error.URLError as exc:
+            if on_done:
+                on_done(False, f"Download failed (network): {exc}")
         except Exception as exc:
-            stop_poll.set()
-            poll_thread.join(timeout=1)
             if on_done:
                 on_done(False, f"Download failed: {exc}")
 
@@ -448,7 +365,9 @@ def auto_download_default(
     on_done: Optional[Callable[[bool, str], None]] = None,
 ) -> None:
     """
-    Ensure both Qwen + Nomic are present for offline use.
+    Ensure both models are present for offline use.
+    Downloads each model sequentially with its own 0-100% progress.
+    Model names and sizes are never exposed to the UI.
 
     Rules:
       1) If bootstrap state matches current manifest and files are valid -> skip network
@@ -457,30 +376,21 @@ def auto_download_default(
       4) Save bootstrap_state.json when complete
     """
 
-    total = len(MOBILE_MODELS)
-
-    def _emit(index: int, frac: float, text: str) -> None:
-        if not on_progress:
-            return
-        frac = max(0.0, min(1.0, frac))
-        overall = (index + frac) / total
-        on_progress(overall, text)
-
     force_every_run = env_truthy(ENV_FORCE_BOOTSTRAP_DOWNLOAD)
     force_network = env_truthy(ENV_FORCE_NETWORK_MODEL_DOWNLOAD)
 
     if _is_bootstrap_complete() and not force_every_run:
         if on_progress:
-            on_progress(1.0, "Offline ready. Using cached AI models.")
+            on_progress(1.0, "Offline ready.")
         if on_done:
-            on_done(True, "All models ready: cached and offline.")
+            on_done(True, "All models ready.")
         return
 
     previous_state = _load_bootstrap_state()
     manifest_changed = bool(previous_state) and previous_state.get("manifest_hash") != _manifest_hash()
 
     def _ensure_model(index: int) -> None:
-        if index >= total:
+        if index >= len(MOBILE_MODELS):
             try:
                 _save_bootstrap_state()
             except Exception as exc:
@@ -489,16 +399,18 @@ def auto_download_default(
                 return
 
             if on_progress:
-                on_progress(1.0, "Offline ready. AI models cached on device.")
+                on_progress(1.0, "Offline ready.")
             if on_done:
-                on_done(True, "All models ready: Qwen + Nomic")
+                on_done(True, "All models ready.")
             return
 
         meta = MOBILE_MODELS[index]
-        label = meta["label"].split("(")[0].strip()
+        display_label = meta.get("display_label", f"Model {index + 1}")
 
         if _is_model_file_ready(meta) and not manifest_changed and not force_every_run:
-            _emit(index, 1.0, f"{label} already cached.")
+            # Already cached, emit 100% for this model and move on
+            if on_progress:
+                on_progress(1.0, f"{display_label} is ready.")
             _ensure_model(index + 1)
             return
 
@@ -510,25 +422,26 @@ def auto_download_default(
             except Exception:
                 pass
 
-        if force_every_run:
-            _emit(index, 0.0, f"Downloading {label} (dev force mode)...")
-        else:
-            _emit(index, 0.0, f"Downloading {label} (first launch only)...")
+        if on_progress:
+            on_progress(0.0, f"Downloading {display_label}…")
 
         def _on_progress(frac: float, text: str) -> None:
-            _emit(index, frac, f"{label}: {text}")
+            # Each model gets its own 0-100% progress
+            if on_progress:
+                on_progress(frac, f"Downloading {display_label}… {int(frac * 100)}%")
 
         def _on_done(success: bool, message: str) -> None:
             if not success:
                 if on_done:
-                    on_done(False, message)
+                    on_done(False, f"Download failed.")
                 return
 
             if not _is_model_file_ready(meta):
                 if on_done:
-                    on_done(False, f"Download incomplete: {meta['filename']}")
+                    on_done(False, f"Download incomplete.")
                 return
 
+            # Move to next model
             _ensure_model(index + 1)
 
         download_model(
@@ -536,7 +449,7 @@ def auto_download_default(
             filename=meta["filename"],
             revision=meta.get("revision", "main"),
             min_bytes=int(meta.get("min_bytes", 1)),
-            expected_size_mb=int(meta.get("size_mb", 0)),
+            expected_size_mb=0,  # Don't use hardcoded size; rely on Content-Length
             force_download=(manifest_changed or force_every_run or force_network),
             on_progress=_on_progress,
             on_done=_on_done,
@@ -569,7 +482,7 @@ def auto_download_default_sync(on_progress=None):
             filename=meta["filename"],
             revision=meta.get("revision", "main"),
             min_bytes=int(meta.get("min_bytes", 1)),
-            expected_size_mb=int(meta.get("size_mb", 0)),
+            expected_size_mb=0,
             force_download=False,
             on_progress=on_progress,
             on_done=None,

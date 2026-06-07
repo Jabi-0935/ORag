@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../theme/app_theme.dart';
 
 /// Animated three-dot typing indicator (like iMessage).
 class TypingIndicator extends StatefulWidget {
@@ -25,9 +24,10 @@ class _TypingIndicatorState extends State<TypingIndicator>
     });
 
     _animations = _controllers.map((c) {
-      return Tween<double>(begin: 0, end: -8).animate(
-        CurvedAnimation(parent: c, curve: Curves.easeInOut),
-      );
+      return Tween<double>(
+        begin: 0,
+        end: -8,
+      ).animate(CurvedAnimation(parent: c, curve: Curves.easeInOut));
     }).toList();
 
     // Stagger the animations
@@ -50,40 +50,34 @@ class _TypingIndicatorState extends State<TypingIndicator>
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 48, top: 4, bottom: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // AI avatar
           Container(
-            width: 30,
-            height: 30,
+            width: 32,
+            height: 32,
             margin: const EdgeInsets.only(top: 2),
             decoration: BoxDecoration(
-              color: AppColors.secondary.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(10),
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: scheme.secondary.withValues(alpha: 0.3),
+                width: 1,
+              ),
             ),
-            child: const Icon(
-              Icons.auto_awesome_rounded,
-              size: 16,
-              color: AppColors.secondary,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(11),
+              child: Image.asset('assets/logo.png', fit: BoxFit.cover),
             ),
           ),
-          const SizedBox(width: 8),
-          // Dots bubble
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-            decoration: BoxDecoration(
-              color: AppColors.aiBubble,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(18),
-                topRight: Radius.circular(18),
-                bottomLeft: Radius.circular(4),
-                bottomRight: Radius.circular(18),
-              ),
-              border: Border.all(color: AppColors.divider, width: 1),
-            ),
+          const SizedBox(width: 10),
+          // Dots — no bubble, matches new AI style
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: List.generate(3, (i) {
@@ -100,7 +94,7 @@ class _TypingIndicatorState extends State<TypingIndicator>
                     height: 8,
                     margin: EdgeInsets.only(right: i < 2 ? 5 : 0),
                     decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.7),
+                      color: scheme.primary.withValues(alpha: 0.7),
                       shape: BoxShape.circle,
                     ),
                   ),

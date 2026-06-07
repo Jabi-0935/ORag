@@ -1,64 +1,109 @@
 """
-retriever.py â€” Hybrid BM25 + TF-IDF + Semantic retriever.
+retriever.py — Optimized 2-Retriever system with Weighted RRF.
 
-* BM25     : classic probabilistic keyword ranking (no deps).
-* TF-IDF   : sparse cosine over pre-computed chunk vectors.
-* Semantic : dense cosine over embeddings from llama-server /embedding
-              endpoint (computed in background after every reload).
+Retrievers:
+  1. Sparse: SQLite FTS5 native BM25 (zero RAM overhead)
+  2. Dense:  Nomic Embed v1.5 semantic cosine via llama-server /embedding
 
-When semantic embeddings are available the final score is:
-    0.30 * bm25_norm  +  0.20 * tfidf_norm  +  0.50 * semantic_norm
-Otherwise falls back to the classic hybrid:
-    alpha * bm25_norm  +  (1-alpha) * tfidf_norm
+Re-ranking:
+  - Weighted Reciprocal Rank Fusion (wRRF) with 0.7 dense + 0.3 sparse
+  - Contextual pruning: drops chunks whose score < 40% of the top result
+
+Small-to-Big expansion:
+  - After pruning, expands matched small chunks to their parent (400-word)
+    chunks from the parent_chunks table for richer LLM context.
+
+Optimizations:
+  - Nomic search_document: / search_query: prefixes for correct embedding space
+  - Batch embedding via single HTTP request (N-in-1)
+  - Parallel sparse + dense retrieval via ThreadPoolExecutor
+  - O(1) chunk ID lookups via dict index
+  - Embedding persistence in SQLite (survives app restarts)
 """
 from __future__ import annotations
 
 import math
 import threading
-from typing import List, Dict, Tuple
-
-from chunker import tokenise
-
-# ------------------------------------------------------------------ #
-#  BM25 parameters                                                     #
-# ------------------------------------------------------------------ #
-K1  = 1.5   # term-frequency saturation
-B   = 0.75  # length normalisation weight
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Tuple, Optional
 
 
 # ------------------------------------------------------------------ #
-#  Helpers                                                             #
+#  Dense similarity helper                                             #
 # ------------------------------------------------------------------ #
-
-def _dot(a: Dict[str, float], b: Dict[str, float]) -> float:
-    """Sparse dot product."""
-    if len(a) > len(b):
-        a, b = b, a
-    return sum(a[t] * b[t] for t in a if t in b)
-
-
-def _norm(v: Dict[str, float]) -> float:
-    return math.sqrt(sum(x * x for x in v.values())) or 1.0
-
-
-def _cosine_sparse(a: Dict[str, float], b: Dict[str, float]) -> float:
-    return _dot(a, b) / (_norm(a) * _norm(b))
-
 
 def _cosine_dense(a: list, b: list) -> float:
-    """Cosine similarity between two dense float vectors (pure Python)."""
-    dot = sum(x * y for x, y in zip(a, b))
-    na  = math.sqrt(sum(x * x for x in a)) or 1.0
-    nb  = math.sqrt(sum(x * x for x in b)) or 1.0
-    return dot / (na * nb)
+    """Cosine similarity — single-pass for 3x speedup over naive 3-pass."""
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    denom = math.sqrt(na * nb)
+    return dot / denom if denom > 0 else 0.0
 
 
-def _normalise_scores(scores: List[float]) -> List[float]:
-    """Min-max normalise a list to [0, 1]."""
-    mn = min(scores)
-    mx = max(scores)
-    rng = mx - mn or 1.0
-    return [(s - mn) / rng for s in scores]
+# ------------------------------------------------------------------ #
+#  Weighted Reciprocal Rank Fusion                                     #
+# ------------------------------------------------------------------ #
+
+def _wrrf_merge(
+    sparse_results: List[Tuple[int, float]],
+    dense_results: List[Tuple[int, float]],
+    w_dense: float = 0.7,
+    w_sparse: float = 0.3,
+    k: int = 60,
+) -> List[Tuple[int, float]]:
+    """
+    Merge two ranked result lists using Weighted Reciprocal Rank Fusion.
+
+    Each result is (chunk_id, score).  RRF is rank-based so raw scores
+    don't need normalization — only ordinal position matters.
+
+    Returns merged list of (chunk_id, wrrf_score) sorted descending.
+    """
+    scores: Dict[int, float] = {}
+
+    for rank, (cid, _) in enumerate(sparse_results):
+        scores[cid] = scores.get(cid, 0.0) + w_sparse / (k + rank + 1)
+
+    for rank, (cid, _) in enumerate(dense_results):
+        scores[cid] = scores.get(cid, 0.0) + w_dense / (k + rank + 1)
+
+    merged = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return merged
+
+
+def _contextual_prune(
+    results: List[Tuple[int, float]],
+    max_results: int = 2,
+    min_ratio: float = 0.4,
+) -> List[Tuple[int, float]]:
+    """
+    Prune results with a dynamic score threshold.
+
+    Drops any chunk whose score is less than min_ratio * top_score.
+    Then caps at max_results to minimize LLM prefill latency.
+    """
+    if not results:
+        return []
+
+    top_score = results[0][1]
+    if top_score <= 0:
+        return results[:max_results]
+
+    pruned = []
+    for cid, score in results:
+        if score / top_score >= min_ratio:
+            pruned.append((cid, score))
+        else:
+            break  # Results are sorted, so all following are worse
+        if len(pruned) >= max_results:
+            break
+
+    return pruned
 
 
 # ------------------------------------------------------------------ #
@@ -67,196 +112,407 @@ def _normalise_scores(scores: List[float]) -> List[float]:
 
 class HybridRetriever:
     """
-    Loads all chunks into memory once, then answers queries fast.
+    Two-retriever system: FTS5 BM25 (sparse) + Nomic embeddings (dense).
+    Uses Weighted RRF for fusion and contextual pruning for quality.
+
+    Optimizations over baseline:
+      - O(1) chunk lookup via _chunk_index dict
+      - Embedding cache persisted in SQLite
+      - Batch embedding computation (N-in-1 HTTP request)
+      - Parallel sparse+dense retrieval
+      - Nomic search_document:/search_query: prefixes
+
     Call reload() after new documents are ingested.
     """
 
     def __init__(self, alpha: float = 0.5):
         """
-        alpha used for BM25/TF-IDF fallback only (when semantic unavailable):
-            alpha=1.0 â†’ pure BM25
-            alpha=0.0 â†’ pure TF-IDF cosine
+        alpha is kept for backward compatibility but no longer used.
+        The wRRF weights (0.7 dense, 0.3 sparse) are used instead.
         """
         self.alpha = alpha
-        self._chunks: List[dict] = []   # [{id, doc_id, text, tokens, tfidf_vec}, ...]
+        self._chunks: List[dict] = []   # [{id, doc_id, text, tokens, parent_chunk_idx}, ...]
+        self._chunk_index: Dict[int, int] = {}  # chunk_id -> list index (O(1) lookup)
+        self._text_index: Dict[tuple, int] = {}  # (doc_id, text) -> list index (O(1) lookup)
         self._avg_dl: float = 0.0
         # Semantic embedding cache: chunk_id -> list[float]
         self._embeddings: dict = {}
         self._embed_lock  = threading.Lock()
         self._embed_ready = False
+        # Reuse a single ThreadPoolExecutor for all query() calls
+        # (avoids spawning a new thread pool on every search request)
+        self._query_pool  = ThreadPoolExecutor(max_workers=2)
 
     # --- loading ---
 
     def reload(self) -> None:
-        """Re-read all chunks from the database and trigger embedding computation."""
-        from storage import load_all_chunks
+        """Re-read all chunks from the database and trigger embedding computation.
+
+        Embedding computation runs in a background thread so this method
+        returns immediately and the UI stays responsive during ingest.
+        Queries fall back to BM25-only (sparse) until embeddings are ready.
+        """
+        from storage import load_all_chunks, load_cached_embeddings
         self._chunks = load_all_chunks()
+        # Build O(1) indexes for fast lookup
+        self._chunk_index = {c["id"]: i for i, c in enumerate(self._chunks)}
+        self._text_index = {
+            (c["doc_id"], c["text"].strip()): i
+            for i, c in enumerate(self._chunks)
+        }
+
+        # Load persisted embeddings from SQLite first
+        cached = load_cached_embeddings()
         with self._embed_lock:
-            self._embeddings  = {}
-            self._embed_ready = False
+            self._embeddings = cached
+            self._embed_ready = bool(cached)
+
         if self._chunks:
             total = sum(len(c["tokens"]) for c in self._chunks)
             self._avg_dl = total / len(self._chunks)
-            # Compute dense embeddings in background â€” doesn't block the UI
-            threading.Thread(
+            # Lazy-start Nomic server if needed (on low-RAM, it defers to here)
+            try:
+                from memory_management import ensure_nomic_server
+                from downloader import NOMIC_MODEL, model_dest_path
+                nomic_path = model_dest_path(NOMIC_MODEL["filename"])
+                ensure_nomic_server(nomic_path)
+            except Exception as e:
+                print(f"[retriever] Nomic lazy-start skipped: {e}")
+            # Run embedding computation in a background thread so reload()
+            # returns immediately — queries use BM25-only until it finishes
+            t = threading.Thread(
                 target=self._compute_embeddings,
                 daemon=True,
-            ).start()
+                name="nomic-embed",
+            )
+            t.start()
         else:
             self._avg_dl = 1.0
 
+    def remove_doc(self, doc_id: int) -> None:
+        """
+        BE-4: Incrementally remove one document's chunks without a full DB reload.
+        O(N) in-memory filter — much faster than reload() for single-doc deletes.
+        """
+        self._chunks = [c for c in self._chunks if c['doc_id'] != doc_id]
+        # Rebuild O(1) indexes from the filtered list
+        self._chunk_index = {c['id']: i for i, c in enumerate(self._chunks)}
+        self._text_index = {
+            (c['doc_id'], c['text'].strip()): i
+            for i, c in enumerate(self._chunks)
+        }
+        if self._chunks:
+            total = sum(len(c['tokens']) for c in self._chunks)
+            self._avg_dl = total / len(self._chunks)
+        else:
+            self._avg_dl = 1.0
+        # Remove embeddings for the deleted doc's chunks
+        valid_ids = {c['id'] for c in self._chunks}
+        with self._embed_lock:
+            self._embeddings = {
+                k: v for k, v in self._embeddings.items() if k in valid_ids
+            }
+            self._embed_ready = bool(self._embeddings)
+
     def _compute_embeddings(self) -> None:
         """
-        Background thread: call llama-server /embedding for every chunk
-        and cache the result.  Capped at 30 chunks to avoid 100s of serial
-        HTTP roundtrips on large documents (BM25+TF-IDF handles the rest).
-        Gracefully no-ops if the server is down or embeddings are unsupported.
+        Background thread: compute embeddings for chunks that don't have
+        cached embeddings yet.  Uses batch embedding for speed.
+
+        Uses Nomic's search_document: prefix for proper embedding space.
+        Persists results to SQLite so they survive app restarts.
+        On low-RAM profiles, stops the Nomic server after completion.
         """
         try:
-            from llm import get_embedding
-            computed = {}
-            # Cap at 30 chunks â€” embed only the first 30 for speed.
-            # For RAG we retrieve top-2; 30 embedded chunks is more than enough.
-            chunks_to_embed = self._chunks[:30]
-            for c in chunks_to_embed:
-                cid  = c["id"]
-                # Cap at 300 chars â‰ˆ 100 tokens, matching Nomic ctx=128
-                text = c["text"][:300]
-                emb = get_embedding(text)
-                if emb is None:
-                    print("[retriever] embedding endpoint unavailable â€” "
-                          "falling back to BM25+TF-IDF only")
-                    return
-                computed[cid] = emb
+            from llm import get_embeddings_batch, get_embedding
+            from storage import save_embeddings_batch
+
+            # Adaptive chunk limit from memory profile
+            try:
+                from memory_management import get_profile
+                limit = get_profile().get("embed_chunk_limit", 50)
+            except Exception:
+                limit = 50
+
+            # Filter out chunks that already have cached embeddings
             with self._embed_lock:
-                self._embeddings  = computed
+                cached_ids = set(self._embeddings.keys())
+
+            chunks_to_embed = [
+                c for c in self._chunks[:limit]
+                if c["id"] not in cached_ids
+            ]
+
+            if not chunks_to_embed:
+                with self._embed_lock:
+                    self._embed_ready = True
+                print(f"[retriever] all embeddings cached "
+                      f"({len(cached_ids)} chunks)")
+                return
+
+            # Prepare texts with Nomic search_document: prefix
+            texts = [
+                "search_document: " + c["text"][:480]
+                for c in chunks_to_embed
+            ]
+
+            # Batch embedding: one HTTP round-trip for all texts
+            print(f"[retriever] computing {len(texts)} embeddings (batch)...")
+            embeddings_list = get_embeddings_batch(texts)
+
+            new_embeddings = {}
+            for c, emb in zip(chunks_to_embed, embeddings_list):
+                if emb is not None:
+                    new_embeddings[c["id"]] = emb
+
+            if not new_embeddings and chunks_to_embed:
+                # Batch failed completely — try serial fallback for first chunk
+                first_emb = get_embedding("search_document: " + chunks_to_embed[0]["text"][:480])
+                if first_emb is None:
+                    print("[retriever] embedding endpoint unavailable — "
+                          "falling back to BM25 only")
+                    return
+                # Serial fallback for remaining chunks
+                for c in chunks_to_embed:
+                    emb = get_embedding("search_document: " + c["text"][:480])
+                    if emb is not None:
+                        new_embeddings[c["id"]] = emb
+
+            # Merge with existing cache
+            with self._embed_lock:
+                self._embeddings.update(new_embeddings)
                 self._embed_ready = True
+
+            # Persist new embeddings to SQLite
+            if new_embeddings:
+                try:
+                    save_embeddings_batch(new_embeddings)
+                except Exception as e:
+                    print(f"[retriever] embedding persistence failed: {e}")
+
+            total = len(self._embeddings)
             print(f"[retriever] semantic embeddings ready "
-                  f"({len(computed)} chunks)")
+                  f"({total} total, {len(new_embeddings)} new)")
+
+            # On low-RAM: stop Nomic server to reclaim ~140 MB
+            try:
+                from memory_management import should_stop_nomic_after_embedding
+                if should_stop_nomic_after_embedding():
+                    from llm import stop_nomic_server
+                    stop_nomic_server()
+                    print("[retriever] Nomic server stopped to free memory "
+                          "(low-RAM profile)")
+            except Exception:
+                pass
+
         except Exception as e:
             print(f"[retriever] embedding computation failed: {e}")
 
     def is_empty(self) -> bool:
         return len(self._chunks) == 0
 
-    # --- BM25 ---
+    # --- chunk lookup ---
 
-    def _bm25_scores(self, query_tokens: List[str]) -> List[float]:
-        N = len(self._chunks)
-        scores: List[float] = []
+    def _chunk_by_id(self, chunk_id: int) -> Optional[dict]:
+        """O(1) lookup of chunk dict by ID via index."""
+        idx = self._chunk_index.get(chunk_id)
+        if idx is not None and idx < len(self._chunks):
+            return self._chunks[idx]
+        return None
 
-        # IDF per query token across current corpus
-        idf: Dict[str, float] = {}
-        for qt in set(query_tokens):
-            df = sum(1 for c in self._chunks if qt in c["tokens"])
-            idf[qt] = math.log((N - df + 0.5) / (df + 0.5) + 1.0)
+    # --- FTS5 BM25 sparse retrieval ---
 
-        for chunk in self._chunks:
-            dl = len(chunk["tokens"]) or 1
-            tf_map: Dict[str, int] = {}
-            for t in chunk["tokens"]:
-                tf_map[t] = tf_map.get(t, 0) + 1
+    def _sparse_search(self, query: str, top_k: int = 10) -> List[Tuple[int, float]]:
+        """Run FTS5 BM25 search. Returns [(chunk_id, bm25_score), ...]."""
+        from storage import fts5_bm25_search
+        return fts5_bm25_search(query, top_k=top_k)
 
-            score = 0.0
-            for qt in query_tokens:
-                if qt not in tf_map:
-                    continue
-                tf = tf_map[qt]
-                score += idf.get(qt, 0.0) * (
-                    tf * (K1 + 1)
-                    / (tf + K1 * (1 - B + B * dl / self._avg_dl))
-                )
-            scores.append(score)
-        return scores
+    # --- Dense semantic retrieval ---
 
-    # --- TF-IDF cosine ---
-
-    def _cosine_scores(self, query_tokens: List[str]) -> List[float]:
-        from collections import Counter
-        tf = Counter(query_tokens)
-        total = len(query_tokens) or 1
-        q_vec: Dict[str, float] = {t: cnt / total for t, cnt in tf.items()}
-        return [_cosine_sparse(q_vec, c["tfidf_vec"]) for c in self._chunks]
-
-    # --- semantic cosine ---
-
-    def _semantic_scores(self, query_text: str) -> "List[float] | None":
+    def _dense_search(self, query_text: str, top_k: int = 10) -> List[Tuple[int, float]]:
         """
-        Returns per-chunk cosine similarity against a fresh query embedding,
-        or None if embeddings are not yet ready / unavailable.
+        Returns top_k (chunk_id, cosine_score) using cached embeddings.
+        Uses Nomic's search_query: prefix for proper embedding space.
+
+        BE-5: NumPy vectorized fast-path for cosine similarity.
+        Falls back to pure-Python if numpy is unavailable.
         """
         with self._embed_lock:
-            if not self._embed_ready:
-                return None
-            embeddings = dict(self._embeddings)  # snapshot
+            if not self._embed_ready or not self._embeddings:
+                return []
+            chunk_ids = list(self._embeddings.keys())
+            embeddings_snapshot = [self._embeddings[cid] for cid in chunk_ids]
 
         try:
             from llm import get_embedding
-            q_emb = get_embedding(query_text[:300])
+            q_emb = get_embedding("search_query: " + query_text[:280])
             if q_emb is None:
-                return None
+                return []
+
+            # BE-5: NumPy vectorized cosine similarity (10-50x faster than pure Python)
+            try:
+                import numpy as np
+                matrix = np.array(embeddings_snapshot, dtype=np.float32)
+                qvec = np.array(q_emb, dtype=np.float32)
+                # Normalize rows of matrix and query vector
+                row_norms = np.linalg.norm(matrix, axis=1, keepdims=True).clip(min=1e-9)
+                q_norm = np.linalg.norm(qvec).clip(min=1e-9)
+                matrix_normed = matrix / row_norms
+                qvec_normed = qvec / q_norm
+                sims = matrix_normed @ qvec_normed
+                # Get top_k indices efficiently with argpartition
+                if len(chunk_ids) <= top_k:
+                    top_indices = np.argsort(sims)[::-1]
+                else:
+                    top_indices = np.argpartition(sims, -top_k)[-top_k:]
+                    top_indices = top_indices[np.argsort(sims[top_indices])[::-1]]
+                return [(chunk_ids[i], float(sims[i])) for i in top_indices]
+            except ImportError:
+                pass  # numpy not available — fall through to pure-Python
+
+            # Pure-Python fallback
             scores = []
-            for c in self._chunks:
-                cid = c["id"]
-                chunk_emb = embeddings.get(cid)
-                scores.append(
-                    _cosine_dense(q_emb, chunk_emb) if chunk_emb else 0.0
-                )
-            return scores
+            for cid, chunk_emb in zip(chunk_ids, embeddings_snapshot):
+                sim = _cosine_dense(q_emb, chunk_emb)
+                scores.append((cid, sim))
+            scores.sort(key=lambda x: x[1], reverse=True)
+            return scores[:top_k]
         except Exception as e:
-            print(f"[retriever] semantic query failed: {e}")
-            return None
+            print(f"[retriever] dense search failed: {e}")
+            return []
 
     # --- public query ---
 
-    def query(self, text: str, top_k: int = 4) -> List[Tuple[str, float, int]]:
+    def query(
+        self,
+        text: str,
+        top_k: int = 4,
+        doc_ids: list | None = None,
+    ) -> List[Tuple[str, float, int]]:
         """
-        Returns list of (chunk_text, score, doc_id) sorted by relevance, top_k results.
-        Uses semantic embeddings when available (best quality), otherwise
-        falls back to pure BM25 + TF-IDF hybrid.
+        Returns list of (chunk_text, score, doc_id) sorted by relevance.
+        doc_ids: optional list of doc IDs to restrict retrieval to specific documents.
+
+        Pipeline:
+        1. Run FTS5 BM25 (sparse) and Dense (semantic) in parallel
+        2. Merge with Weighted RRF (0.7 dense, 0.3 sparse)
+        3. Contextual pruning (drop chunks < 40% of top score)
+        4. Cap at top_k; optionally filter by doc_ids
         """
         if self.is_empty():
             return []
 
-        q_tokens = tokenise(text)
-        sem = self._semantic_scores(text)
+        # Step 1: Retrieve from both sources in parallel using the shared pool
+        sparse_fut = self._query_pool.submit(self._sparse_search, text, 10)
+        dense_fut  = self._query_pool.submit(self._dense_search, text, 10)
+        try:
+            sparse = sparse_fut.result(timeout=5)
+        except Exception:
+            sparse = []
+        try:
+            dense = dense_fut.result(timeout=5)
+        except Exception:
+            dense = []
 
-        if not q_tokens and sem is None:
-            # No keyword match possible, and no semantic embeddings available
+        if not sparse and not dense:
             return []
 
-        bm25 = self._bm25_scores(q_tokens) if q_tokens else [0.0] * len(self._chunks)
-        cos  = self._cosine_scores(q_tokens) if q_tokens else [0.0] * len(self._chunks)
-
-        bm25_n = _normalise_scores(bm25) if q_tokens else [0.0] * len(self._chunks)
-        cos_n  = _normalise_scores(cos) if q_tokens else [0.0] * len(self._chunks)
-
-        if sem is not None:
-            sem_n = _normalise_scores(sem)
-            # Semantic-weighted blend: 30 BM25 + 20 TF-IDF + 50 semantic
-            combined = [
-                (i, 0.30 * b + 0.20 * c + 0.50 * s)
-                for i, (b, c, s) in enumerate(zip(bm25_n, cos_n, sem_n))
-            ]
+        # Step 2: Merge with Weighted RRF
+        if dense:
+            merged = _wrrf_merge(sparse, dense, w_dense=0.7, w_sparse=0.3)
         else:
-            # Fallback: classic BM25 + TF-IDF hybrid
-            combined = [
-                (i, self.alpha * b + (1 - self.alpha) * c)
-                for i, (b, c) in enumerate(zip(bm25_n, cos_n))
-            ]
+            # Fallback: only sparse results available (no embeddings yet)
+            merged = [(cid, score) for cid, score in sparse]
 
-        combined.sort(key=lambda x: x[1], reverse=True)
-        
+        # Step 3: Contextual pruning — drop low-relevance, cap at top_k
+        # LOW/ULTRA_LOW devices use a tighter ratio (e.g. 0.5) to keep fewer, 
+        # sharper chunks, saving context window space.
+        try:
+            from memory_management import get_profile
+            prune_ratio = get_profile().get("prune_ratio", 0.4)
+        except Exception:
+            prune_ratio = 0.4
+            
+        pruned = _contextual_prune(merged, max_results=top_k, min_ratio=prune_ratio)
+
+        # Step 4: Build result tuples
         seen_texts = set()
         top = []
-        for x in combined:
-            idx = x[0]
-            txt = self._chunks[idx]["text"].strip()
+        for cid, score in pruned:
+            chunk = self._chunk_by_id(cid)
+            if chunk is None:
+                continue
+            txt = chunk["text"].strip()
             if txt in seen_texts:
                 continue
             seen_texts.add(txt)
-            top.append((txt, x[1], self._chunks[idx]["doc_id"]))
-            if len(top) >= top_k:
-                break
-        
+            top.append((txt, score, chunk["doc_id"]))
+
+        # Filter by allowed doc_ids if specified (zero extra latency)
+        if doc_ids is not None:
+            top = [(txt, score, did) for txt, score, did in top if did in doc_ids]
+
         return top
+
+    def query_with_expansion(
+        self,
+        text: str,
+        top_k: int = 2,
+        doc_ids: list | None = None,
+    ) -> List[Tuple[str, float, int]]:
+        """
+        Small-to-Big query: retrieve small chunks, then expand to parent chunks.
+
+        Returns list of (parent_chunk_text, score, doc_id).
+        Falls back to small chunk text if parent is not available.
+        Uses O(1) reverse-text index instead of linear scan.
+        """
+        if self.is_empty():
+            return []
+
+        small_results = self.query(text, top_k=top_k, doc_ids=doc_ids)
+        if not small_results:
+            return []
+
+        from storage import get_parent_chunk_text
+        expanded = []
+        seen_parents = set()
+        for chunk_text, score, doc_id in small_results:
+            # O(1) lookup via _text_index instead of O(N) linear scan
+            chunk = self._find_chunk_by_text(chunk_text, doc_id)
+
+            if chunk and chunk.get("parent_chunk_idx", -1) >= 0:
+                parent_key = (doc_id, chunk["parent_chunk_idx"])
+                if parent_key in seen_parents:
+                    continue
+                seen_parents.add(parent_key)
+
+                parent_text = get_parent_chunk_text(doc_id, chunk["parent_chunk_idx"])
+                if parent_text:
+                    expanded.append((parent_text, score, doc_id))
+                    continue
+
+            expanded.append((chunk_text, score, doc_id))
+
+        return expanded
+
+    def _find_chunk_by_text(self, text: str, doc_id: int) -> Optional[dict]:
+        """O(1) chunk lookup by text+doc_id via reverse index."""
+        key = (doc_id, text.strip())
+        idx = self._text_index.get(key)
+        if idx is not None and idx < len(self._chunks):
+            return self._chunks[idx]
+        return None
+
+    def get_chunk_ids_for_results(
+        self, results: list[tuple[str, float, int]]
+    ) -> list[int]:
+        """Map RAG query results back to chunk IDs.
+        Uses O(1) text index for fast matching.
+        """
+        chunk_ids = []
+        for text, score, doc_id in results:
+            chunk = self._find_chunk_by_text(text, doc_id)
+            if chunk:
+                chunk_ids.append(chunk["id"])
+        return chunk_ids

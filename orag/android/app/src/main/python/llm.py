@@ -44,12 +44,54 @@ _ANDROID_NATIVE_LIB_DIR: Optional[str] = None
 _ANDROID_FILES_DIR: Optional[str] = None
 
 
+class DualLogger:
+    """Redirects stdout/stderr to both the original stream and a log file."""
+    def __init__(self, original_stream, log_file_path):
+        self.original_stream = original_stream
+        self.log_file_path = log_file_path
+
+    def write(self, message):
+        if self.original_stream is not None:
+            try:
+                self.original_stream.write(message)
+            except Exception:
+                pass
+        if message:
+            try:
+                with open(self.log_file_path, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(message)
+            except Exception:
+                pass
+
+    def flush(self):
+        if self.original_stream is not None:
+            try:
+                self.original_stream.flush()
+            except Exception:
+                pass
+
+
 def set_android_paths(native_lib_dir: str, files_dir: str) -> None:
     """Called from Kotlin to inject Android-specific paths before init."""
     global _ANDROID_NATIVE_LIB_DIR, _ANDROID_FILES_DIR
     _ANDROID_NATIVE_LIB_DIR = native_lib_dir
     _ANDROID_FILES_DIR = files_dir
+    os.environ["ANDROID_PRIVATE"] = files_dir
     print(f"[llm] Android paths injected: native_lib={native_lib_dir}, files={files_dir}")
+
+    # Set up DualLogger to output clean Python prints to a local file
+    try:
+        import sys
+        log_path = os.path.join(files_dir, "app_python.log")
+        # Clear/initialize the log file
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("--- Clean Python Log Started ---\n")
+        
+        sys.stdout = DualLogger(sys.stdout, log_path)
+        sys.stderr = DualLogger(sys.stderr, log_path)
+        print(f"[llm] Clean Python file logging initialized at: {log_path}")
+    except Exception as e:
+        print(f"[llm] Failed to initialize file logger: {e}")
 
 
 def _is_android() -> bool:
@@ -88,7 +130,7 @@ def _get_llama():
     global _llama_mod
     if _llama_mod is None:
         try:
-            from llama_cpp import Llama
+            from llama_cpp import Llama  # type: ignore
             _llama_mod = Llama
         except ImportError:
             raise RuntimeError("llama-cpp-python is not installed.")
@@ -98,7 +140,7 @@ def _get_llama():
 def _ollama_reachable() -> bool:
     """Return True if the Ollama server is reachable on localhost:11434."""
     try:
-        import ollama as _ol
+        import ollama as _ol  # type: ignore
         _ol.list()
         return True
     except Exception:
@@ -123,6 +165,20 @@ def _optimal_threads() -> int:
         return max(2, min(8, count // 2))
     except Exception:
         return 4
+
+
+# ------------------------------------------------------------------ #
+#  Adaptive memory profiling (delegated to memory_management.py)       #
+# ------------------------------------------------------------------ #
+
+def get_memory_profile() -> dict:
+    """Return the adaptive memory profile from memory_management module.
+    This is kept as a thin wrapper for backward compatibility.
+    """
+    from memory_management import get_profile
+    return get_profile()
+
+
 _LLAMASERVER_PROC  = None
 _LLAMASERVER_LOCK  = threading.Lock()
 _ANDROID_EXE_PATH: Optional[str] = None   # set once by _ensure_android_binary
@@ -140,15 +196,6 @@ def _bin_dir() -> Path:
 def _ensure_android_binary() -> Optional[str]:
     """
     Android-specific: locate the bundled ARM64 llama-server binary.
-
-    The binary is bundled as lib/arm64-v8a/llama-server.so (or legacy
-    libllama_server.so) in the APK.
-    Android's package installer extracts all .so files from lib/<abi>/ to
-    the app's nativeLibraryDir at install time with correct SELinux labels
-    that allow execve() â€” the ONLY reliable way to run native code on
-    modern Android (code_cache / data dirs block exec via SELinux).
-
-    No runtime extraction needed â€” just find the pre-installed path.
     """
     global _ANDROID_EXE_PATH, _ANDROID_BINARY_ERROR
     if _ANDROID_EXE_PATH is not None:
@@ -157,62 +204,27 @@ def _ensure_android_binary() -> Optional[str]:
     if not _is_android():
         return None
 
-    priv = _android_private_dir()
-    dbg: list[str] = [f"ANDROID_PRIVATE={priv}"]
-    print(f"[llama-server] _is_android()=True, priv={priv}")
-
     # Primary: use path injected from Kotlin (most reliable)
     native_lib_dir: Optional[str] = _ANDROID_NATIVE_LIB_DIR
-    if native_lib_dir:
-        dbg.append(f"nativeLibraryDir (from Kotlin)={native_lib_dir}")
-    else:
-        # Fallback: try mActivity (may not work in Flutter threading context)
+    if not native_lib_dir:
         try:
             from android import mActivity  # type: ignore
             native_lib_dir = str(mActivity.getApplicationInfo().nativeLibraryDir)
-            dbg.append(f"nativeLibraryDir (from mActivity)={native_lib_dir}")
-        except Exception as e:
-            dbg.append(f"getApplicationInfo failed: {e}")
+        except Exception:
+            pass
 
     if native_lib_dir:
         candidates = ["llama-server.so", "libllama_server.so"]
         for name in candidates:
             exe = os.path.join(native_lib_dir, name)
-            dbg.append(f"checking {exe}")
             if os.path.isfile(exe):
-                sz = os.path.getsize(exe)
-                dbg.append(f"FOUND: {name} ({sz // 1024} KB)")
-                print(f"[llama-server] native lib: {exe} ({sz // 1024} KB)")
-                try:
-                    Path(priv, "llama_debug.txt").write_text("\n".join(dbg))
-                except Exception:
-                    pass
                 _ANDROID_EXE_PATH = exe
                 return exe
 
-        # List what IS in nativeLibraryDir so we can diagnose wrong names
-        try:
-            present = os.listdir(native_lib_dir)
-            dbg.append(f"NOT FOUND. nativeLibraryDir contains: {present}")
-            _ANDROID_BINARY_ERROR = (
-                f"No llama server binary found in {native_lib_dir}.\n"
-                f"Expected one of: {candidates}\n"
-                f"Directory contains: {present}"
-            )
-        except Exception as le:
-            dbg.append(f"listdir failed: {le}")
-            _ANDROID_BINARY_ERROR = (
-                f"No llama server binary found in {native_lib_dir} "
-                f"(listdir failed: {le})"
-            )
+        _ANDROID_BINARY_ERROR = f"No llama server binary found in {native_lib_dir}."
     else:
         _ANDROID_BINARY_ERROR = "Could not determine nativeLibraryDir"
 
-    try:
-        Path(priv, "llama_debug.txt").write_text("\n".join(dbg))
-    except Exception:
-        pass
-    print(f"[llama-server] binary not found: {_ANDROID_BINARY_ERROR}")
     return None
 
 
@@ -256,22 +268,37 @@ def _wait_for_server(port: int, timeout: int = 120,
     while time.time() < deadline:
         proc = _LLAMASERVER_PROC if port == _LLAMASERVER_PORT else _NOMIC_PROC
         if proc is not None and proc.poll() is not None:
-            print(f"[llama-server port={port}] process exited early (code={proc.returncode})")
+            # Process died. Read tail of log if available.
+            tail = ""
+            priv = _android_private_dir()
+            if priv:
+                try:
+                    log_fn = "llama_server.log" if port == _LLAMASERVER_PORT else "nomic_server.log"
+                    log_path = os.path.join(priv, log_fn)
+                    if os.path.isfile(log_path):
+                        with open(log_path, "rb") as lf:
+                            lf.seek(max(0, os.path.getsize(log_path) - 500))
+                            tail = lf.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+            print(f"[llama-server port={port}] process exited early (code={proc.returncode}). Tail: {tail}")
             return False
+
         try:
-            with urllib.request.urlopen(url, timeout=2) as r:
+            with urllib.request.urlopen(url, timeout=1.5) as r:
                 if r.status == 200:
                     if on_tick:
                         on_tick(1.0, "AI engine ready!")
                     return True
         except Exception:
             pass
+
         elapsed = time.time() - started
         if on_tick and elapsed - last_tick >= 1.0:
             last_tick = elapsed
             pct = min(elapsed / timeout, 0.95)
-            on_tick(pct, f"Loading model into memory\u2026 {int(elapsed)}s")
-        time.sleep(0.5)
+            on_tick(pct, "Preparing the AI engine\u2026")
+        time.sleep(1.0)
     return False
 
 
@@ -299,6 +326,116 @@ def nomic_port() -> int:
     return _NOMIC_PORT
 
 
+def _prepare_android_env() -> dict:
+    """Build an environment dict suitable for launching native binaries on Android.
+
+    Sets LD_LIBRARY_PATH to include the nativeLibraryDir so the dynamic linker
+    can resolve libllama_server.so's dependencies (libc, libdl, libm are system
+    libs but the linker still needs the search path for the binary itself).
+    """
+    env = os.environ.copy()
+    if _is_android() and _ANDROID_NATIVE_LIB_DIR:
+        ld = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{_ANDROID_NATIVE_LIB_DIR}:{ld}" if ld else _ANDROID_NATIVE_LIB_DIR
+    return env
+
+
+def _launch_binary(cmd: list, env: dict | None = None) -> subprocess.Popen:
+    """Launch a native binary in a cross-platform way.
+
+    On Android: ensures executable permissions, sets LD_LIBRARY_PATH, and tries
+    multiple execution strategies if direct exec fails (ENOEXEC).
+
+    Strategy order:
+      1. Direct exec (works on most Android versions)
+      2. Copy binary to app's private filesDir and exec from there
+         (some Android versions require binaries in writable private dirs)
+      3. Invoke via /system/bin/linker64 (bypasses kernel exec check)
+    """
+    exe_path = cmd[0]
+
+    # Ensure the binary has execute permissions (Android may strip them)
+    if _is_android():
+        try:
+            import stat
+            st = os.stat(exe_path)
+            if not (st.st_mode & stat.S_IXUSR):
+                os.chmod(exe_path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                print(f"[launch] Set +x on {exe_path}")
+        except Exception as e:
+            print(f"[launch] chmod failed (non-fatal): {e}")
+
+    if env is None:
+        env = _prepare_android_env()
+
+    log_file = None
+    if _is_android():
+        priv = _android_private_dir()
+        if priv:
+            log_path = os.path.join(priv, "llama_debug.txt")
+            log_file = open(log_path, "a")
+            log_file.write(f"\\n--- Launching {' '.join(cmd)} ---\\n")
+            log_file.flush()
+
+    kwargs = dict(
+        stdout=log_file if log_file else subprocess.DEVNULL,
+        stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
+        env=env,
+    )
+
+    # creationflags is Windows-only; using it on Android causes issues
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        return subprocess.Popen(cmd, **kwargs)  # type: ignore
+
+    # On Android, try multiple execution strategies
+    strategies = [cmd]  # Strategy 1: direct exec
+
+    if _is_android():
+        # Strategy 2: copy to filesDir and exec from there
+        priv = _android_private_dir()
+        if priv:
+            import shutil
+            bin_name = os.path.basename(exe_path)
+            copied_path = os.path.join(priv, bin_name)
+            try:
+                if not os.path.isfile(copied_path) or os.path.getsize(copied_path) != os.path.getsize(exe_path):
+                    shutil.copy2(exe_path, copied_path)
+                    print(f"[launch] Copied binary to {copied_path}")
+                os.chmod(copied_path, 0o755)
+                copied_cmd = [copied_path] + cmd[1:]
+                strategies.append(copied_cmd)
+            except Exception as e:
+                print(f"[launch] Copy-to-filesDir failed (non-fatal): {e}")
+
+        # Strategy 3: invoke via linker64
+        linker = "/system/bin/linker64"
+        if os.path.isfile(linker):
+            linker_cmd = [linker, exe_path] + cmd[1:]
+            strategies.append(linker_cmd)
+
+    last_error = None
+    for i, try_cmd in enumerate(strategies):
+        try:
+            print(f"[launch] Strategy {i+1}: {try_cmd[0]}")
+            proc = subprocess.Popen(try_cmd, **kwargs)  # type: ignore
+            # Check if process died immediately (within 0.5s)
+            time.sleep(0.3)
+            if proc.poll() is not None:
+                rc = proc.returncode
+                print(f"[launch] Strategy {i+1} exited immediately with code {rc}")
+                last_error = OSError(f"Process exited immediately (code {rc})")
+                continue
+            print(f"[launch] Strategy {i+1} succeeded (pid={proc.pid})")
+            return proc
+        except OSError as e:
+            print(f"[launch] Strategy {i+1} failed: {e}")
+            last_error = e
+            continue
+
+    raise last_error or OSError("All launch strategies failed")
+
+
 def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
                         on_progress: Optional[Callable[[float, str], None]] = None) -> bool:
     global _LLAMASERVER_PROC, _ANDROID_BINARY_ERROR
@@ -311,88 +448,85 @@ def _start_llama_server(model_path: str, n_ctx: int, n_threads: int,
         # Fast-path: the Android foreground service may have already started
         # llama-server.  If the port is responding we don't need a new process.
         if _probe_port(_LLAMASERVER_PORT):
-            print("[llama-server] Already running (owned by service) â€” skipping launch.")
+            print("[llama-server] Already running (owned by service) \u2013 skipping launch.")
             if on_progress:
                 on_progress(1.0, "AI engine ready!")
             return True
+        profile = get_memory_profile()
+        # Use _optimal_threads() (half of physical cores) for batch processing
+        # This prevents slow LITTLE cores from bottlenecking the fast performance cores.
+        batch_threads = _optimal_threads()
         cmd = [
             str(exe),
             "--model", model_path,
-            "--ctx-size", str(n_ctx),              # dynamic
-            "--threads", str(n_threads),           # dynamic
-            "--threads-batch", str(n_threads),
-            "--port", str(_LLAMASERVER_PORT),      # FIXED
+            "--ctx-size", str(n_ctx),              # dynamic from profile
+            "--threads", str(n_threads),           # dynamic from profile
+            "--threads-batch", str(batch_threads),
+            "--port", str(_LLAMASERVER_PORT),
             "--host", "127.0.0.1",
-
-            # performance flags (important)
+            "--n-gpu-layers", "0",
             "--flash-attn", "on",
             "--cont-batching",
-            "--cache-type-k", "q8_0",
-            "--cache-type-v", "q8_0",
         ]
+
+        # Adaptive flags based on RAM profile
+        kv_type = profile.get("kv_cache_type", "q8_0")
+        batch = profile.get("batch_size", 512)
+        use_mmap = profile.get("use_mmap", False)
+
+        cmd.extend(["--cache-type-k", kv_type,
+                     "--cache-type-v", kv_type])
+        if batch != 512:  # only override if non-default
+            cmd.extend(["--batch-size", str(batch)])
+        if not use_mmap:
+            cmd.extend(["--no-mmap"])
+
+        print(f"  Memory mode: {profile['profile']} "
+              f"(mmap={'on' if use_mmap else 'off'}, cache={kv_type}, batch={batch})")
         print(f"[llama-server] Starting: {cmd[0]}")
         print(f"  Model: {Path(model_path).name}")
         print("  Loading model into memory, please wait ...")
         if on_progress:
-            on_progress(0.02, f"Starting AI engine\u2026 ({Path(model_path).name})")
-        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        log_file = None
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_path = os.path.join(priv, "llama_server.log")
-                log_file = open(log_path, "wb")
-            except Exception:
-                pass
+            on_progress(0.02, "Preparing the AI engine\u2026")
+
         try:
-            _LLAMASERVER_PROC = subprocess.Popen(
-                cmd,
-                stdout=log_file if log_file else subprocess.DEVNULL,
-                stderr=log_file if log_file else subprocess.DEVNULL,
-                creationflags=cf,
-            )
+            _LLAMASERVER_PROC = _launch_binary(cmd)
         except Exception as exc:
-            if log_file:
-                log_file.close()
-            _ANDROID_BINARY_ERROR = f"Popen failed: {type(exc).__name__}: {exc}"
+            _ANDROID_BINARY_ERROR = f"Launch failed: {exc}"
             print(f"[llama-server] Launch failed: {exc}")
             return False
+
     ready = _wait_for_server(_LLAMASERVER_PORT, timeout=180, on_tick=on_progress)
     if not ready:
         _stop_llama_server()
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_path = os.path.join(priv, "llama_server.log")
-                if os.path.isfile(log_path):
-                    with open(log_path, "rb") as lf:
-                        lf.seek(max(0, os.path.getsize(log_path) - 1000))
-                        tail = lf.read().decode("utf-8", errors="replace")
-                    _ANDROID_BINARY_ERROR = f"Server log tail: {tail}"
-                    print(f"[llama-server] server log: {tail}")
-            except Exception:
-                pass
-        print("[llama-server] Timed out / crashed waiting for server.")
+        print("[llama-server] Timed out waiting for server.")
         return False
-    if log_file:
-        try:
-            log_file.close()
-        except Exception:
-            pass
+
     print("[llama-server] Server ready.")
     return True
 
 
 def start_nomic_server(model_path: str,
-                       n_ctx: int = 128,
-                       n_threads: int = 0) -> bool:
+                       n_ctx: int = 512,
+                       n_threads: int = 0,
+                       kv_cache_type: str = "") -> bool:
     """
     Start a *second* llama-server process on _NOMIC_PORT (8083) loaded
     with the Nomic embedding model.  No-op if already running.
     Returns True when the server is ready.
+
+    kv_cache_type: override KV-cache quantisation (default: read from
+    memory profile; falls back to q4_0 to keep Nomic's footprint minimal).
     """
     if n_threads == 0:
         n_threads = _optimal_threads()
+    # Use profile kv_cache_type if not explicitly provided
+    if not kv_cache_type:
+        try:
+            from memory_management import get_profile
+            kv_cache_type = get_profile().get("kv_cache_type", "q4_0")
+        except Exception:
+            kv_cache_type = "q4_0"
     global _NOMIC_PROC
     exe = _server_exe()
     if exe is None:
@@ -411,42 +545,26 @@ def start_nomic_server(model_path: str,
             "--host",          "127.0.0.1",
             "--embedding",
             "--flash-attn",    "on",
-            "--cache-type-k",  "q8_0",
-            "--cache-type-v",  "q8_0",
+            "--cache-type-k",  kv_cache_type,
+            "--cache-type-v",  kv_cache_type,
         ]
-        print(f"[nomic-server] Starting on port {_NOMIC_PORT}")
+        print(f"[nomic-server] Starting on port {_NOMIC_PORT} "
+              f"(kv_cache={kv_cache_type})")
         print(f"  Model: {Path(model_path).name}")
-        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        log_file = None
-        priv = _android_private_dir()
-        if priv:
-            try:
-                log_file = open(os.path.join(priv, "nomic_server.log"), "wb")
-            except Exception:
-                pass
+
         try:
-            _NOMIC_PROC = subprocess.Popen(
-                cmd,
-                stdout=log_file if log_file else subprocess.DEVNULL,
-                stderr=log_file if log_file else subprocess.DEVNULL,
-                creationflags=cf,
-            )
+            _NOMIC_PROC = _launch_binary(cmd)
         except Exception as exc:
-            if log_file:
-                log_file.close()
             print(f"[nomic-server] Launch failed: {exc}")
             return False
     ready = _wait_for_server(_NOMIC_PORT, timeout=120)
-    if log_file:
-        try:
-            log_file.close()
-        except Exception:
-            pass
-    if ready:
-        print("[nomic-server] Ready.")
-    else:
+    if not ready:
+        stop_nomic_server()
         print("[nomic-server] Timed out / crashed.")
-    return ready
+        return False
+
+    print("[nomic-server] Ready.")
+    return True
 
 
 def stop_nomic_server() -> None:
@@ -462,6 +580,35 @@ def stop_nomic_server() -> None:
                 except Exception:
                     pass
             _NOMIC_PROC = None
+    # Notify memory_management that Nomic is stopped
+    try:
+        from memory_management import mark_nomic_stopped
+        mark_nomic_stopped()
+    except Exception:
+        pass
+
+
+def _nomic_server_available() -> Optional[int]:
+    """Return the Nomic port if the server is available, else None."""
+    if _NOMIC_PROC is not None and _NOMIC_PROC.poll() is None:
+        return _NOMIC_PORT
+    if _probe_port(_NOMIC_PORT):
+        return _NOMIC_PORT
+    return None
+
+
+def _parse_embedding_response(data) -> "list[float] | None":
+    """Parse embedding from llama-server response (handles multiple formats)."""
+    if isinstance(data, list):
+        emb = data[0].get("embedding") if data else None
+    else:
+        emb = data.get("embedding")
+    # Unwrap double-nested [[floats]] -> [floats]
+    if isinstance(emb, list) and emb and isinstance(emb[0], list):
+        emb = emb[0]
+    if isinstance(emb, list) and emb:
+        return emb
+    return None
 
 
 def get_embedding(text: str) -> "list[float] | None":
@@ -475,13 +622,8 @@ def get_embedding(text: str) -> "list[float] | None":
 
     Returns None if the Nomic server is not available.
     """
-    # ONLY use the dedicated Nomic embedding server
-    if _NOMIC_PROC is not None and _NOMIC_PROC.poll() is None:
-        port = _NOMIC_PORT
-    elif _probe_port(_NOMIC_PORT):
-        # Service-owned process on the Nomic port
-        port = _NOMIC_PORT
-    else:
+    port = _nomic_server_available()
+    if port is None:
         return None
     import urllib.request
     import urllib.error
@@ -493,23 +635,59 @@ def get_embedding(text: str) -> "list[float] | None":
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
-            # Newer llama-server: [{"index": 0, "embedding": [[float, ...]]}]
-            # Older llama-server: {"embedding": [float, ...]}
-            if isinstance(data, list):
-                emb = data[0].get("embedding") if data else None
-            else:
-                emb = data.get("embedding")
-            # Unwrap double-nested [[floats]] â†’ [floats]
-            if isinstance(emb, list) and emb and isinstance(emb[0], list):
-                emb = emb[0]
-            if isinstance(emb, list) and emb:
-                return emb
-            return None
+            return _parse_embedding_response(data)
     except Exception as e:
         print(f"[embedding] failed: {e}")
         return None
+
+
+def get_embeddings_batch(texts: list) -> "list[list[float] | None]":
+    """Batch embedding — sends multiple texts in one HTTP round-trip.
+
+    Falls back to serial get_embedding() if the batch endpoint is
+    unsupported by the running llama-server version.
+
+    Returns a list of embedding vectors (or None) in the same order.
+    """
+    if not texts:
+        return []
+    port = _nomic_server_available()
+    if port is None:
+        return [None] * len(texts)
+
+    import urllib.request
+    import urllib.error
+
+    # Try batch request first (newer llama-server supports array content)
+    try:
+        payload = json.dumps({"content": texts}).encode()
+        url = f"http://127.0.0.1:{port}/embedding"
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+            if isinstance(data, list) and len(data) == len(texts):
+                results = []
+                for item in data:
+                    emb = item.get("embedding") if isinstance(item, dict) else None
+                    if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                        emb = emb[0]
+                    results.append(emb if isinstance(emb, list) and emb else None)
+                return results
+            # Single-item fallback format
+            emb = _parse_embedding_response(data)
+            if emb and len(texts) == 1:
+                return [emb]
+    except Exception as e:
+        print(f"[embedding-batch] batch failed, falling back to serial: {e}")
+
+    # Fallback: serial embedding
+    return [get_embedding(t) for t in texts]
 
 
 def _stop_llama_server() -> None:
@@ -533,16 +711,39 @@ def _gen_via_server(
 ) -> str:
     import urllib.request
     import urllib.error
+
+    # ------------------------------------------------------------------ #
+    #  Hard guard: ensure prompt_tokens + max_tokens never exceeds n_ctx.  #
+    #  llama-server returns an error ("reduce the prompts") when they do.  #
+    # ------------------------------------------------------------------ #
+    try:
+        from memory_management import get_profile
+        _n_ctx = get_profile().get("n_ctx", 2048)
+    except Exception:
+        _n_ctx = 2048
+    # Estimate prompt token count — 3.5 chars/token is accurate for English
+    _prompt_tok_est = max(1, len(prompt) // 4)  # slightly conservative
+    _safe_max = max(64, _n_ctx - _prompt_tok_est - 64)  # 64-token safety buffer
+    if max_tokens > _safe_max:
+        print(f"[llm] n_predict clamped {max_tokens} → {_safe_max} "
+              f"(prompt≈{_prompt_tok_est} tok, n_ctx={_n_ctx})")
+        max_tokens = _safe_max
+
     # llama-server native endpoint: /completion  (NOT /v1/completions)
-    # Note: do NOT include "cache_prompt" â€” it is rejected (HTTP 400) by
-    # many llama-server builds.
+    # cache_prompt:true instructs llama-server to cache the KV state for
+    # the prompt prefix.  On follow-up queries that share the same system
+    # prompt, the server skips re-computing the system prompt tokens —
+    # typically saving 200-600 ms on the first token latency.
     payload = json.dumps({
-        "prompt":      prompt,
-        "n_predict":   max_tokens,
-        "temperature": temperature,
-        "top_p":       top_p,
-        "stream":      stream_cb is not None,
-        "stop":        ["<|im_end|>", "<|im_start|>", "</s>"],
+        "prompt":        prompt,
+        "n_predict":     max_tokens,
+        "temperature":   temperature,
+        "top_p":         top_p,
+        "top_k":         20,
+        "presence_penalty": 1.5,
+        "cache_prompt":  True,         # KV-prefix caching for system prompt reuse
+        "stream":        stream_cb is not None,
+        "stop":          ["<|im_end|>", "<|im_start|>", "</s>"],
     }).encode()
     url = f"http://127.0.0.1:{_LLAMASERVER_PORT}/completion"
     print(f"[DEBUG] Sending request to: {url}")
@@ -551,11 +752,14 @@ def _gen_via_server(
         url, data=payload,
         headers={"Content-Type": "application/json"}, method="POST",
     )
+    # Dynamic timeout: 10s base + 3ms per output token
+    # Streaming gets more headroom since tokens arrive incrementally.
+    _req_timeout = 10 + max_tokens * 3
     for attempt in range(2):
         try:
             if stream_cb is not None:
                 full = ""
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=_req_timeout) as resp:
                     import api
                     for raw in resp:
                         if getattr(api, "_stop_flag", False):
@@ -575,7 +779,7 @@ def _gen_via_server(
                             pass
                 return full
             else:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=_req_timeout) as resp:
                     body = json.loads(resp.read())
                 return body.get("content", "")
         except urllib.error.HTTPError as e:
@@ -589,16 +793,14 @@ def _gen_via_server(
             if attempt == 1:
                 raise RuntimeError(f"llama-server unreachable: {e}") from e
         
-        # Give it a tiny bit of breathing room before second try
-        import time
-        time.sleep(1)
+        # Brief pause before retry
+        time.sleep(0.3)
         
     return ""
 
 
 # ------------------------------------------------------------------ #
 #  Model directory                                                     #
-# ------------------------------------------------------------------ #
 
 def _ensure_writable_dir(path: Optional[str]) -> Optional[str]:
     if not path:
@@ -684,11 +886,11 @@ class LlamaCppModel:
       3. llama-server      (auto-extracted from llamacpp_bin.zip)
     """
 
-    DEFAULT_CTX      = 768
-    DEFAULT_MAX_TOK  = 320
-    DEFAULT_TEMP     = 0.7
-    DEFAULT_TOP_P    = 0.9
-    DEFAULT_THREADS  = 0   # 0 = auto-detect via _optimal_threads()
+    DEFAULT_CTX      = 2048    # fallback only; overridden by memory profile
+    DEFAULT_MAX_TOK  = 512
+    DEFAULT_TEMP     = 0.3
+    DEFAULT_TOP_P    = 0.8
+    DEFAULT_THREADS  = 0   # 0 = auto-detect
 
     def __init__(self) -> None:
         self._model      = None
@@ -696,16 +898,28 @@ class LlamaCppModel:
         self._lock       = threading.Lock()
         self._backend    = "none"   # "llama_cpp"|"ollama"|"llama_server"|"none"
         self._ollama_name = ""
+        self._last_thinking: str = ""  # raw <think> block from last generate call
+
+    @property
+    def last_thinking(self) -> str:
+        """Return the raw thinking text extracted from the last generate() call."""
+        return self._last_thinking
 
     # ---------------------------------------------------------------- #
     #  Loading                                                           #
     # ---------------------------------------------------------------- #
 
-    def load(self, model_path: str, n_ctx: int = DEFAULT_CTX,
+    def load(self, model_path: str, n_ctx: int = 0,
              n_threads: int = DEFAULT_THREADS, n_gpu_layers: int = 0,
              on_progress: Optional[Callable[[float, str], None]] = None) -> None:
+        # Use adaptive memory profile for ctx and threads
+        profile = get_memory_profile()
+        if n_ctx == 0:
+            n_ctx = profile["n_ctx"]
         if n_threads == 0:
-            n_threads = _optimal_threads()
+            n_threads = profile["n_threads"]
+        print(f"[LLM] Loading with ctx={n_ctx}, threads={n_threads} "
+              f"(profile={profile['profile']})")
         with self._lock:
             self._unload_internal()
 
@@ -761,7 +975,7 @@ class LlamaCppModel:
 
     def _load_via_ollama(self, model_path: str) -> None:
         try:
-            import ollama as _ol
+            import ollama as _ol  # type: ignore
         except ImportError:
             raise RuntimeError("ollama package not installed.")
         stem  = Path(model_path).stem.lower()
@@ -819,7 +1033,7 @@ class LlamaCppModel:
     def generate(
         self,
         prompt: str,
-        max_tokens:  int   = DEFAULT_MAX_TOK,
+        max_tokens:  int   = 0,
         temperature: float = DEFAULT_TEMP,
         top_p:       float = DEFAULT_TOP_P,
         stream_cb:   Optional[Callable[[str], None]] = None,
@@ -831,6 +1045,12 @@ class LlamaCppModel:
         """
         if self._backend == "none":
             raise RuntimeError("No model loaded. Call load() first.")
+
+        # Adaptive max_tokens from pressure-aware profile
+        if max_tokens == 0:
+            from memory_management import check_memory_pressure
+            profile = check_memory_pressure()
+            max_tokens = profile.get("max_tokens", self.DEFAULT_MAX_TOK)
 
         # Wrap stream_cb with the thinking-token filter
         filtered_cb = None
@@ -849,11 +1069,18 @@ class LlamaCppModel:
         if think_filter is not None:
             think_filter.flush()
 
-        # Strip thinking blocks from the full returned string too
-        return _strip_thinking(raw)
+        # Debug log: show full raw output for troubleshooting
+        print(f"[LLM] Raw output ({len(raw)} chars):\n{raw}")
+
+        # Strip thinking blocks (captures the thinking text), then sanitize
+        cleaned, thinking = _strip_thinking(raw)
+        self._last_thinking = thinking
+        return _strip_leaked_prompt(cleaned)
 
     def _gen_llama_cpp(self, prompt, max_tokens, temp, top_p, stream_cb):
         with self._lock:
+            if self._model is None:
+                raise RuntimeError("Model not loaded")
             if stream_cb:
                 full = ""
                 for chunk in self._model(
@@ -863,6 +1090,10 @@ class LlamaCppModel:
                     top_p       = top_p,
                     stream      = True,
                 ):
+                    import api
+                    if getattr(api, "_stop_flag", False):
+                        print("[LLM] Stream stopped by user")
+                        break
                     token = chunk["choices"][0]["text"]
                     full += token
                     stream_cb(token)
@@ -878,7 +1109,7 @@ class LlamaCppModel:
                 return out["choices"][0]["text"]
 
     def _gen_ollama(self, prompt, max_tokens, temp, top_p, stream_cb):
-        import ollama as _ol
+        import ollama as _ol  # type: ignore
         options = {
             "temperature": temp,
             "top_p":       top_p,
@@ -892,6 +1123,10 @@ class LlamaCppModel:
                 options = options,
                 stream  = True,
             ):
+                import api
+                if getattr(api, "_stop_flag", False):
+                    print("[LLM] Stream stopped by user")
+                    break
                 token = chunk.response
                 full += token
                 stream_cb(token)
@@ -910,64 +1145,130 @@ class LlamaCppModel:
 #  Thinking-token filter                                               #
 # ------------------------------------------------------------------ #
 
-def _strip_thinking(text: str) -> str:
+def _strip_thinking(text: str) -> tuple:
     """
     Remove internal reasoning blocks that thinking models emit before
     the real answer.  Handles several common tag styles.
+
+    Returns (cleaned_text, thinking_text) so callers can display
+    the model's reasoning in the UI if desired.
     """
-    # Standard <think>...</think> (Qwen, DeepSeek, GLM thinking variants)
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    thinking_parts: list = []
+
+    def _capture(m):
+        thinking_parts.append(m.group(1).strip())
+        return ''
+
+    # Standard <think>...</think> (Qwen3, DeepSeek, GLM thinking variants)
+    text = re.sub(r'<think>(.*?)</think>', _capture, text, flags=re.DOTALL)
+    # Extended <thinking>...</thinking> (Qwen3 sometimes uses this variant)
+    text = re.sub(r'<thinking>(.*?)</thinking>', _capture, text, flags=re.DOTALL)
     # Pipe-delimited variants  <|think|>...</|think|>
-    text = re.sub(r'<\|think\|>.*?</\|think\|>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<\|think\|>(.*?)</\|think\|>', _capture, text, flags=re.DOTALL)
     # Some models wrap reasoning in triple-backtick reasoning blocks
-    text = re.sub(r'```reasoning.*?```', '', text, flags=re.DOTALL)
-    return text.strip()
+    text = re.sub(r'```reasoning(.*?)```', _capture, text, flags=re.DOTALL)
+
+    thinking_text = '\n\n'.join(p for p in thinking_parts if p)
+    return text.strip(), thinking_text
+
+
+# All tag variants that models use for thinking blocks
+_THINK_OPEN_TAGS  = ("<thinking>", "<think>")
+_THINK_CLOSE_TAGS = ("</thinking>", "</think>")
+
+
+def _find_any(buf: str, tags: tuple) -> tuple:
+    """Find the earliest occurrence of any tag in buf. Returns (index, tag) or (-1, '')."""
+    best_idx = -1
+    best_tag = ''
+    for tag in tags:
+        idx = buf.find(tag)
+        if idx != -1 and (best_idx == -1 or idx < best_idx):
+            best_idx = idx
+            best_tag = tag
+    return best_idx, best_tag
 
 
 class _ThinkingStreamFilter:
     """
-    Wraps a stream_cb so that tokens inside <think>â€¦</think> blocks are
+    Wraps a stream_cb so that tokens inside thinking blocks are
     suppressed; only the real answer tokens are forwarded to the UI.
+
+    Handles both <think>/<thinking> tag variants and strips orphaned
+    closing tags that appear without a matching opener.
     """
     def __init__(self, cb):
         self._cb     = cb
         self._buf    = ""    # accumulates tokens we haven't decided about yet
-        self._depth  = 0     # nesting level inside <think> block
-        self._past   = False # True once we've seen </think>
+        self._depth  = 0     # nesting level inside think block
+        self._past   = False # True once we've seen a closing tag
 
     def __call__(self, token: str):
         self._buf += token
         while True:
             if self._depth == 0:
-                # Not inside a think block â€” look for opening tag
-                idx = self._buf.find("<think>")
-                if idx == -1:
-                    # No think tag anywhere â€” flush all buffered tokens
-                    if self._buf:
-                        self._cb(self._buf)
-                        self._buf = ""
-                    break
-                else:
-                    # Flush everything before the tag, then swallow from tag onward
-                    if idx > 0:
-                        self._cb(self._buf[:idx])
-                    self._buf  = self._buf[idx + len("<think>"):]
+                # Strip any orphaned closing tags at depth 0
+                close_idx, close_tag = _find_any(self._buf, _THINK_CLOSE_TAGS)
+                if close_idx != -1:
+                    if close_idx > 0:
+                        self._cb(self._buf[:close_idx])
+                    self._buf = self._buf[close_idx + len(close_tag):]
+                    self._past = True
+                    continue
+
+                # Look for opening tag
+                open_idx, open_tag = _find_any(self._buf, _THINK_OPEN_TAGS)
+                if open_idx != -1:
+                    if open_idx > 0:
+                        self._cb(self._buf[:open_idx])
+                    self._buf = self._buf[open_idx + len(open_tag):]
                     self._depth = 1
+                    continue
+                else:
+                    # No complete tag — hold back partial fragments
+                    safe, held = self._split_partial(self._buf)
+                    if safe:
+                        self._cb(safe)
+                    self._buf = held
+                    break
             else:
-                # Inside a think block â€” look for closing tag
-                idx = self._buf.find("</think>")
-                if idx == -1:
-                    # Haven't seen closing tag yet â€” keep buffering
+                # Inside a think block — look for closing tag
+                close_idx, close_tag = _find_any(self._buf, _THINK_CLOSE_TAGS)
+                if close_idx == -1:
                     break
                 else:
-                    self._buf   = self._buf[idx + len("</think>"):]
+                    self._buf   = self._buf[close_idx + len(close_tag):]
                     self._depth = 0
                     self._past  = True
+
+    @staticmethod
+    def _split_partial(buf: str) -> tuple:
+        """Split buffer into safe-to-flush and held-back portions.
+
+        If the buffer ends with a prefix of any thinking tag,
+        hold it back so we don't flush a partial tag to the UI.
+        """
+        # All possible partial prefixes of <think>, </think>,
+        # <thinking>, and </thinking>
+        _PARTIALS = (
+            "<thinking", "<thinkin", "<thinki", "<think", "<thin", "<thi", "<th", "<t",
+            "</thinking", "</thinkin", "</thinki", "</think", "</thin", "</thi", "</th", "</t", "</",
+            "<",
+        )
+        for p in _PARTIALS:
+            if buf.endswith(p):
+                return buf[:-len(p)], p
+        return buf, ""
 
     def flush(self):
         """Call after generation ends to emit any remaining buffered tokens."""
         if self._buf and self._depth == 0:
-            self._cb(self._buf)
+            # Final flush: strip any remaining orphaned tags
+            clean = self._buf
+            for tag in _THINK_OPEN_TAGS + _THINK_CLOSE_TAGS:
+                clean = clean.replace(tag, "")
+            if clean.strip():
+                self._cb(clean)
             self._buf = ""
 
 
@@ -975,50 +1276,143 @@ class _ThinkingStreamFilter:
 #  Prompt builder                                                      #
 # ------------------------------------------------------------------ #
 
-def build_rag_prompt(context_chunks: list[str], question: str) -> str:
+def build_rag_prompt(
+    context_chunks: list[str], 
+    question: str,
+    history: list[tuple[str, str]] | None = None,
+    summary: str = "",
+    response_style: str = "concise",
+) -> str:
     """
-    Build a RAG prompt using Qwen 2.5's ChatML instruction format.
+    Build a RAG prompt using Qwen3.5 ChatML instruction format.
     (<|im_start|> / <|im_end|> tokens)
-    Each chunk is capped at 800 chars to stay within ctx=768 budget.
+
+    Adaptive: caps total context size based on the active memory profile's
+    n_ctx so the prompt never overflows the KV cache.
+
+    response_style: 'concise' uses a brief-answer system prompt,
+                    'detailed' uses a thorough-answer system prompt.
+
+    Token budget math (conservative):
+      - 3.5 chars ≈ 1 token for English text
+      - 512 tokens reserved for the system message + ChatML overhead
+      - max_tokens reserved for the answer
+      - The rest is available for RAG context chunks
     """
-    # Cap each chunk so total prompt stays within context window:
-    # 2 chunks Ã— 800 chars â‰ˆ 300 tokens, + system (~80) + question (~30) = ~410 tokens
-    # leaving ~350 tokens for the reply (max_tok=256 + overhead).
-    capped = [c[:800] for c in context_chunks]
+    from memory_management import get_profile
+    profile = get_profile()          # use base profile, not pressure-adjusted
+    n_ctx      = profile.get("n_ctx", 2048)
+    max_tokens = profile.get("max_tokens", 512)
+
+    # Conservative token estimate: 4 chars/token, 256-token system overhead
+    # Leave a 64-token safety buffer so we never hit the exact boundary.
+    context_token_budget = max(64, n_ctx - max_tokens - 256 - 64)
+    budget_chars = context_token_budget * 4  # 4 chars/token for chunk text
+
+    # Fit as many chunks as the budget allows
+    capped = []
+    used = 0
+    for c in context_chunks:
+        avail = budget_chars - used
+        if avail <= 100:
+            break
+        piece = c[:avail]
+        capped.append(piece)
+        used += len(piece)
+
     ctx_text = "\n\n---\n\n".join(capped)
-    system_msg = (
-        "You are a helpful assistant. "
-        "Answer ONLY based on the provided context. "
-        "Write at least 2-3 sentences â€” never give a one-word answer. "
-        "Do NOT just repeat the question. "
-        "If the answer is not in the context, say \"I don't know.\". "
-        "Reply with only your final answer â€” no reasoning steps."
-    )
-    return (
-        f"<|im_start|>system\n{system_msg}<|im_end|>\n"
+
+    if response_style == "detailed":
+        system_msg = (
+            "You are an expert analyst. Provide a complete, well-structured answer "
+            "using only the provided context. Cover the key points with supporting details.\n"
+            "You may wrap brief reasoning inside <think> and </think> tags if needed.\n"
+            "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
+            "Do not repeat the question. Do not write excessively long responses."
+        )
+    else:
+        system_msg = (
+            "You are an expert analyst. Give a brief, focused answer using only "
+            "the provided context. Summarize the key points in a few sentences.\n"
+            "When listing items, mention only the most important 2-3 with one-line descriptions.\n"
+            "Avoid detailed breakdowns, bullet-heavy formatting, or exhaustive lists.\n"
+            "If the context lacks the answer, say: \"I don't know based on the documents.\"\n"
+            "Do not repeat the question."
+        )
+
+    if summary.strip():
+        system_msg += "\n\nEarlier in this conversation (summary):\n" + summary.strip()
+
+    parts: list[str] = [f"<|im_start|>system\n{system_msg}<|im_end|>\n"]
+
+    for user_msg, asst_msg in (history or [])[-3:]:
+        parts.append(
+            f"<|im_start|>user\n{user_msg}<|im_end|>\n"
+            f"<|im_start|>assistant\n{asst_msg}<|im_end|>\n"
+        )
+
+    parts.append(
         f"<|im_start|>user\n"
         f"Context:\n{ctx_text}\n\nQuestion: {question}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )
+    return "".join(parts)
+
+
+def _strip_leaked_prompt(text: str) -> str:
+    """
+    Post-processing safety net: remove any text that looks like the model
+    echoed back system-prompt structure (numbered analysis steps, constraint
+    lists, etc.) instead of giving a direct answer.
+    """
+    import re
+    # Strip leading numbered sections like "1. Analyze the Request:" blocks
+    # Pattern: one or more "N. Some Header:" sections followed by bullet lists
+    text = re.sub(
+        r'^(\d+\.\s+.+?:\s*\n(?:\s*[\*\-•].*\n)*)+',
+        '',
+        text,
+        flags=re.MULTILINE,
+    )
+    # Strip lines that are clearly leaked constraint/instruction echoes
+    leaked_patterns = [
+        r'^\s*Constraint\s+\d+:.*$',
+        r'^\s*Task:.*$',
+        r'^\s*Analyze the (Request|Context|Question):.*$',
+        r'^\s*Document Source:.*$',
+    ]
+    for pat in leaked_patterns:
+        text = re.sub(pat, '', text, flags=re.MULTILINE | re.IGNORECASE)
+    # Collapse multiple blank lines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 def build_direct_prompt(
     question: str,
     history: list[tuple[str, str]] | None = None,
     summary: str = "",
+    response_style: str = "concise",
 ) -> str:
     """
     Build a plain conversational prompt using Qwen 2.5's ChatML format.
     summary : compressed plain-text of older turns (no LLM call, first sentences).
     history : last 3 verbatim (user, assistant) pairs.
+    response_style: 'concise' for brief answers, 'detailed' for thorough answers.
     """
-    system_msg = (
-        "You are a knowledgeable, helpful AI assistant. "
-        "Answer the user's question directly and completely. "
-        "Write at least 2-3 sentences. "
-        "Do NOT just repeat the question or echo back one word. "
-        "Reply with only your final answer — no reasoning steps."
-    )
+    if response_style == "detailed":
+        system_msg = (
+            "You are a capable AI assistant. Provide a complete, well-structured answer "
+            "covering the key points with relevant details.\n"
+            "You may wrap brief reasoning inside <think> and </think> tags if needed.\n"
+            "Do not repeat the question. Do not write excessively long responses."
+        )
+    else:
+        system_msg = (
+            "You are a direct AI assistant. Answer clearly and concisely. "
+            "Get straight to the point.\n"
+            "Do not repeat the question."
+        )
     # Append compressed older context to system message so it takes fewer
     # tokens than full ChatML turns but still informs the model.
     if summary.strip():

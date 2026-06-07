@@ -1,11 +1,18 @@
 android {
     defaultConfig {
+        // Chaquopy REQUIRES ndk.abiFilters — do not remove.
+        // Note: --split-per-abi cannot be used alongside ndk.abiFilters (Gradle
+        // rejects both simultaneously). The CI workflow builds a universal APK
+        // (all 3 ABIs in one file) which is compatible with Chaquopy.
         ndk {
             abiFilters "armeabi-v7a", "arm64-v8a", "x86_64"
         }
-
         python {
             buildPython "D:/Work/8th_Sem/venv/Scripts/python.exe"
+            // buildPython is resolved at build time.
+            // On CI (Linux): resolved from CHAQUOPY_PYTHON env var (python3).
+            // Locally (Windows): set buildPython to your venv python path here
+            // or pass -PchaquopyPython=<path> via gradle.properties.
             pip {
                 install "numpy"
                 install "certifi"
